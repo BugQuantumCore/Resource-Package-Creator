@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/mrpc-core",
+    "crates/mrpc-vvvf",
+    "crates/mrpc-script",
+    "crates/mrpc-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/BugQuantumCore/Resource-Package-Creator"
+
+[workspace.dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
+thiserror = "2.0.21"
+image = "0.25.10"
+zip = "9.5.1"
+glam = "0.34.3"
+eframe = "0.37.0"
+egui = "0.37.0"
+egui-wgpu = "0.37.0"
+rquickjs = "0.14.0"
+libloading = "0.9.1"
+cpal = "0.18.2"
+cc = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+opt-level = 3
+
+[profile.dev.package."*"]
+opt-level = 2

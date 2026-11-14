@@ -1,0 +1,32 @@
+[package]
+name = "mrpc-app"
+description = "MTR Resource Package Creator — desktop application (egui + wgpu)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mrpc-core = { path = "../mrpc-core" }
+mrpc-vvvf = { path = "../mrpc-vvvf" }
+mrpc-script = { path = "../mrpc-script" }
+eframe = { workspace = true }
+egui = { workspace = true }
+egui-wgpu = { workspace = true }
+glam = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bytemuck = { version = "1", features = ["derive"] }
+image = { workspace = true }
+
+[features]
+default = []
+audio = ["dep:cpal"]
+
+[dependencies.cpal]
+workspace = true
+optional = true
+
+[[bin]]
+name = "mtr-resource-package-creator"
+path = "src/main.rs"

@@ -1,0 +1,17 @@
+[package]
+name = "mrpc-core"
+description = "MTR 4.0.x custom-resource pack data model, parsers, validation and packaging (Rust)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+image = { workspace = true }
+zip = { workspace = true }
+
+[dev-dependencies]
+mrpc-vvvf = { path = "../mrpc-vvvf" }
