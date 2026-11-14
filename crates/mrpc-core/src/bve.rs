@@ -20,25 +20,47 @@
 pub struct BveConfig {
     /// `MotorNoiseDataType` — 4 (BVE4/OpenBVE `train.dat`) or 5 (BVE5/6 CSVs).
     pub motor_noise_data_type: i32,
+    /// `[SoundList]` entries: index → sound file name (motor loops).
+    pub sound_list: Vec<Option<String>>,
 }
 
 impl BveConfig {
     pub fn parse(text: &str) -> BveConfig {
-        let mut cfg = BveConfig { motor_noise_data_type: 5 };
+        let mut cfg = BveConfig { motor_noise_data_type: 5, sound_list: Vec::new() };
+        let mut in_sound_list = false;
         for line in text.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with(';') || line.starts_with('#') {
                 continue;
             }
+            if line.starts_with('[') {
+                in_sound_list = line
+                    .trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .eq_ignore_ascii_case("soundlist");
+                continue;
+            }
             if let Some((key, value)) = line.split_once('=') {
                 let key = key.trim().to_ascii_lowercase();
                 let value = value.trim();
-                if key == "motornoisedatatype" {
+                if in_sound_list {
+                    if let Ok(idx) = key.parse::<usize>() {
+                        while cfg.sound_list.len() <= idx {
+                            cfg.sound_list.push(None);
+                        }
+                        cfg.sound_list[idx] = Some(value.to_string());
+                    }
+                } else if key == "motornoisedatatype" {
                     cfg.motor_noise_data_type = value.parse().unwrap_or(5);
                 }
             }
         }
         cfg
+    }
+
+    /// Sound file for motor channel `index`, if listed.
+    pub fn sound_file(&self, index: usize) -> Option<&str> {
+        self.sound_list.get(index).and_then(|s| s.as_deref())
     }
 }
 
@@ -291,6 +313,17 @@ mod tests {
     fn sound_cfg_parse() {
         let cfg = BveConfig::parse("BveTs Vehicle Sound Data 2.00\nMotorNoiseDataType=5\nVolume=1.0");
         assert_eq!(cfg.motor_noise_data_type, 5);
+    }
+
+    #[test]
+    fn sound_cfg_sound_list() {
+        let cfg = BveConfig::parse(
+            "BveTs Vehicle Sound Data 2.00\nMotorNoiseDataType=5\n[SoundList]\n0=MotorA.wav\n2=MotorC.wav\n",
+        );
+        assert_eq!(cfg.motor_noise_data_type, 5);
+        assert_eq!(cfg.sound_file(0), Some("MotorA.wav"));
+        assert_eq!(cfg.sound_file(1), None);
+        assert_eq!(cfg.sound_file(2), Some("MotorC.wav"));
     }
 
     #[test]

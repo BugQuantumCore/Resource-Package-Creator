@@ -79,13 +79,29 @@
 - Door timing (TSC): `DOOR_MOVE_TIME = 3200 ms`, `DOOR_DELAY = 1000 ms`;
   doorCloseTime = max(dwell/2, dwell − move − delay).
 
+## Importers (v0.2, in `mrpc-core`)
+
+- `import.rs`: shared `ImportedModel` (ObjModel + MTL + PNG textures) and
+  the OBJ/MTL serializers importers produce.
+- `mqo.rs`: Metasequoia `.mqo`/`.mqoz` (gzip) — Material `col`/`tex`,
+  `vertex`/`BVertex` (UVs), `face` `V`/`M`/`UV`; left-handed to right-handed
+  (negated z + reversed winding); UV origin stays top-left.
+- `gltf.rs`: glTF 2.0 `.gltf`/`.glb` — buffers (data URI / external / GLB
+  BIN), accessors (with byteStride), node TRS/matrix baking, materials
+  `baseColorFactor` to Kd (linear to sRGB) and `baseColorTexture` to PNG.
+- `bve_playback.rs`: real-sound-source playback — RIFF WAV reader (PCM
+  8/16/24/32-bit, IEEE float 32/64, WAVE_FORMAT_EXTENSIBLE, mono mixdown)
+  and a curve-driven loop resampling engine (per-channel rate/gain,
+  one-pole smoothing, `clone_shared` for the audio thread).
+
 ## Testing
 
-37 unit tests cover the JSON round-trips (including JCM script entries and
+54 unit tests cover the JSON round-trips (including JCM script entries and
 unknown-key preservation), OBJ/MTL/BBModel parsing, the twelve door animation
-curves and the TSC cycle, BVE5/BVE4 motor data, pack zip round-trip +
-generated `pack.png`, validation rules, the seven locales, the C++ VVVF
-engine (fundamental presence/frequency tracking/silence), and the QuickJS
-sandbox (lifecycle, SCRIPT_INPUT, include, Timing, vehicle wrapper, error
-reporting). The demo pack generator is itself tested to produce a
-zero-error pack that parses back cleanly.
+curves and the TSC cycle, BVE5/BVE4 motor data (plus SoundList), pack zip
+round-trip + generated `pack.png`, validation rules, the seven locales, the
+MQO/MQOZ and glTF/GLB importers, the WAV reader and curve-driven BVE playback
+engine, the C++ VVVF engine (fundamental presence/frequency tracking/
+silence), and the QuickJS sandbox (lifecycle, SCRIPT_INPUT, include, Timing,
+vehicle wrapper, error reporting). The demo pack generator is itself tested
+to produce a zero-error pack that parses back cleanly.

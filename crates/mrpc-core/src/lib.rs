@@ -11,11 +11,15 @@
 
 pub mod bbmodel;
 pub mod bve;
+pub mod bve_playback;
 pub mod door_anim;
 pub mod demo;
 pub mod format;
+pub mod gltf;
 pub mod i18n;
+pub mod import;
 pub mod model_props;
+pub mod mqo;
 pub mod mtl;
 pub mod obj;
 pub mod pack;

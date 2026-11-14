@@ -8,7 +8,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/BugQuantumCore/Resource-Package-Creator"
@@ -26,6 +26,8 @@ egui-wgpu = "0.37.0"
 rquickjs = "0.14.0"
 libloading = "0.9.1"
 cpal = "0.18.2"
+flate2 = "1.1"
+base64 = "0.22"
 cc = "1"
 
 [profile.release]

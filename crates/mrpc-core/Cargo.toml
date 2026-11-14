@@ -12,6 +12,9 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 image = { workspace = true }
 zip = { workspace = true }
+flate2 = { workspace = true }
+base64 = { workspace = true }
+glam = { workspace = true }
 
 [dev-dependencies]
 mrpc-vvvf = { path = "../mrpc-vvvf" }

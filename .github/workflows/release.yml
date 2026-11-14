@@ -1,0 +1,78 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build binaries (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: mtr-resource-package-creator-linux-x64
+            binary: mtr-resource-package-creator
+          - os: windows-latest
+            artifact: mtr-resource-package-creator-windows-x64
+            binary: mtr-resource-package-creator.exe
+          - os: macos-latest
+            artifact: mtr-resource-package-creator-macos-arm64
+            binary: mtr-resource-package-creator
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux audio headers
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - name: Build release binary (with audio)
+        run: cargo build -p mrpc-app --release --features audio
+      - name: Generate demo artifacts
+        run: cargo run -p mrpc-core --example gen_demo -- ./out
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "target/release/${{ matrix.binary }}" dist/
+          cp out/mrpc-demo-pack.zip out/vvvf-demo.wav dist/ 2>/dev/null || true
+          cd dist
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            7z a "../${{ matrix.artifact }}.zip" .
+          else
+            zip -r "../${{ matrix.artifact }}.zip" .
+          fi
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.zip
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: List artifacts
+        run: find artifacts -type f | sort
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/*/*.zip

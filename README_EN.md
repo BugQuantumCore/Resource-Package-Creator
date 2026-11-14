@@ -5,13 +5,17 @@ Railway 4.0.x — Windows, Linux and macOS, no Minecraft installation required.
 Written in Rust + C++ (egui + wgpu UI, C++ DSP and native script host).
 
 Features: Blender-style dark 3D model preview (OBJ + MTL, Blockbench
-`.bbmodel`), a full door open/close animation timeline (the twelve MTR door
+`.bbmodel`), external model import (Metasequoia `.mqo`/`.mqoz` and glTF 2.0
+`.gltf`/`.glb`, converted to OBJ + MTL + PNG resources attached to the
+vehicle), a full door open/close animation timeline (the twelve MTR door
 curves ported 1:1, TSC stop timings), a three-mode VVVF audition module
 (C++ SPWM/SHE synthesiser with live waveform + spectrum, BVE5/BVE4 motor-data
-tables, legacy MTR3 speed-sound emulation, WAV rendering), and JCM
-(Yanyang) train-script support: editing of `vehicleScripts` entries,
-JavaScript test-running in a QuickJS sandbox with a simulated train, and a
-C++ native-module preview host (`MRPC_REGISTER_VEHICLE_SCRIPT`).
+tables with **real sound source playback** — WAV loops resampled at the
+frequency-table rate and volume-table gain, legacy MTR3 speed-sound emulation,
+WAV rendering), and JCM (Yanyang) train-script support: editing of
+`vehicleScripts` entries, JavaScript test-running in a QuickJS sandbox with a
+simulated train, and a C++ native-module preview host
+(`MRPC_REGISTER_VEHICLE_SCRIPT`).
 
 UI languages: 简体中文（中国大陆）, 繁體中文（香港特別行政區）, 繁體中文（台灣省）,
 文言（華夏）, English (United States), English (United Kingdom), Français (France).
@@ -19,7 +23,7 @@ UI languages: 简体中文（中国大陆）, 繁體中文（香港特別行政�
 ```sh
 cargo run -p mrpc-app --release                 # GUI
 cargo run -p mrpc-app --release --features audio  # with live audio (Linux: libasound2-dev)
-cargo test --workspace                           # 37 unit tests
+cargo test --workspace                           # 54 unit tests
 cargo run -p mrpc-core --example gen_demo -- ./out
 ```
 

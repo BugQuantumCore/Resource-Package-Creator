@@ -24,6 +24,13 @@ pub struct MrpcApp {
     pending_open: Option<(String, bool)>,
     /// Path prompt for File → Open.
     show_open_dialog: Option<bool>,
+    /// Deferred model-import request (path to .mqo/.mqoz/.gltf/.glb).
+    pending_import: Option<String>,
+    /// Path prompt for File → Import model.
+    show_import_dialog: bool,
+    /// Path prompt for the manual BVE motor WAV loop.
+    show_bve_wav_dialog: bool,
+    pending_bve_wav: Option<String>,
     #[cfg(feature = "audio")]
     pub audio: Option<crate::audio::AudioOut>,
     /// VVVF preview engine (waveform/spectrum without audio hardware).
@@ -58,6 +65,10 @@ impl MrpcApp {
             last_texture_size: None,
             pending_open: None,
             show_open_dialog: None,
+            pending_import: None,
+            show_import_dialog: false,
+            show_bve_wav_dialog: false,
+            pending_bve_wav: None,
             #[cfg(feature = "audio")]
             audio: crate::audio::AudioOut::try_start().ok(),
             preview_engine: Engine::new(mrpc_vvvf::VvvfParams::default()),
@@ -71,6 +82,7 @@ impl MrpcApp {
         self.scene_version += 1;
         self.state.vvvf.bve = None;
         self.state.vvvf.bve_fundamental = None;
+        self.state.vvvf.bve_engine = None;
     }
 
     /// Write the edited model properties back into the pack file.
@@ -317,6 +329,235 @@ impl MrpcApp {
         }
     }
 
+    /// Load the BVE motor sound loops of the current vehicle into a playback
+    /// engine. Channels come from the `sound.cfg` `[SoundList]` section; a
+    /// vehicle without WAV loops keeps `None` (manual load remains possible).
+    pub fn load_bve_sounds(&mut self) -> Option<mrpc_core::bve_playback::BvePlaybackEngine> {
+        let vi = self.state.selected_vehicle()?;
+        let vehicle = self.state.pack.resources.vehicles.get(vi)?;
+        let base = &vehicle.bve_sound_base_resource;
+        if base.is_empty() {
+            return None;
+        }
+        let (ns, path) = match base.split_once(':') {
+            Some((ns, p)) => (ns, p),
+            None => ("mtr", base.as_str()),
+        };
+        let cfg = self.state.vvvf.bve_config.clone()?;
+        let sound_count = self
+            .state
+            .vvvf
+            .bve
+            .as_ref()
+            .map(|b| b.sound_count())
+            .unwrap_or(0);
+        let sr = 48_000.0;
+        let mut loops: Vec<mrpc_core::bve_playback::WavSample> = Vec::new();
+        for i in 0..sound_count {
+            let Some(file) = cfg.sound_file(i) else {
+                loops.push(mrpc_core::bve_playback::WavSample::default());
+                continue;
+            };
+            let bytes = self
+                .state
+                .pack
+                .files
+                .get(&format!("assets/{ns}/sounds/{path}/{file}"))
+                .cloned();
+            let wav = bytes
+                .as_deref()
+                .and_then(|b| mrpc_core::bve_playback::read_wav(b).ok());
+            match wav {
+                Some(w) => loops.push(w),
+                None => loops.push(mrpc_core::bve_playback::WavSample::default()),
+            }
+        }
+        if loops.iter().all(|l| l.data.is_empty()) {
+            return None;
+        }
+        Some(mrpc_core::bve_playback::BvePlaybackEngine::new(&loops, sr))
+    }
+
+    /// Replace the BVE playback engine (also on the audio thread).
+    pub fn set_bve_engine(&mut self, engine: mrpc_core::bve_playback::BvePlaybackEngine) {
+        #[cfg(feature = "audio")]
+        if let Some(audio) = &mut self.audio {
+            audio.set_bve_engine(engine.clone_shared());
+        }
+        self.state.vvvf.bve_engine = Some(engine);
+    }
+
+    /// Load a manual WAV loop and use it for every motor channel.
+    pub fn load_manual_bve_wav(&mut self, path: &str) {
+        match std::fs::read(path)
+            .map_err(|e| e.to_string())
+            .and_then(|b| mrpc_core::bve_playback::read_wav(&b).map_err(|e| e.to_string()))
+        {
+            Ok(wav) => {
+                let channels = self
+                    .state
+                    .vvvf
+                    .bve
+                    .as_ref()
+                    .map(|b| b.sound_count().max(1))
+                    .unwrap_or(1);
+                // Build an engine with `channels` copies of the loop.
+                let engine = mrpc_core::bve_playback::BvePlaybackEngine::new(
+                    &vec![wav; channels.max(1)],
+                    48_000.0,
+                );
+                self.set_bve_engine(engine);
+                self.state.vvvf.message = Some(tf(
+                    self.state.locale,
+                    "vvvf.bve_loaded",
+                    &[("n", &channels.to_string())],
+                ));
+            }
+            Err(e) => {
+                self.state.vvvf.message =
+                    Some(format!("{}: {e}", t(self.state.locale, "import.failed")));
+            }
+        }
+    }
+
+    /// Import an external model file into the pack, attached to the selected
+    /// vehicle (or a freshly created one).
+    fn import_model_file(&mut self, path: &str) {
+        let locale = self.state.locale;
+        let p = std::path::PathBuf::from(path);
+        let bytes = match std::fs::read(&p) {
+            Ok(b) => b,
+            Err(e) => {
+                self.state.status = tf(locale, "import.failed", &[("msg", &e.to_string())]);
+                return;
+            }
+        };
+        let dir = p.parent().map(|d| d.to_path_buf()).unwrap_or_default();
+        let mut resolver = move |uri: &str| -> Option<Vec<u8>> {
+            let candidate = dir.join(uri);
+            std::fs::read(&candidate).ok().or_else(|| {
+                // Case-insensitive fallback (Windows-authored packs).
+                let fname = uri.to_ascii_lowercase();
+                if let Ok(entries) = std::fs::read_dir(&dir) {
+                    for e in entries.flatten() {
+                        if e.file_name().to_string_lossy().to_ascii_lowercase() == fname {
+                            return std::fs::read(e.path()).ok();
+                        }
+                    }
+                }
+                None
+            })
+        };
+        let ext = p
+            .extension()
+            .map(|e| e.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        let imported = match ext.as_str() {
+            "mqo" => std::str::from_utf8(&bytes)
+                .map_err(|e| e.to_string())
+                .and_then(|t| mrpc_core::mqo::parse_mqo(t).map_err(|e| e.to_string())),
+            "mqoz" => mrpc_core::mqo::parse_mqoz(&bytes).map_err(|e| e.to_string()),
+            "gltf" | "glb" => {
+                mrpc_core::gltf::parse_gltf(&bytes, &mut resolver).map_err(|e| e.to_string())
+            }
+            other => Err(format!("unsupported extension: .{other}")),
+        };
+        let imported = match imported {
+            Ok(i) => i,
+            Err(msg) => {
+                self.state.status = tf(locale, "import.failed", &[("msg", &msg)]);
+                return;
+            }
+        };
+
+        // Resource ids under a fresh custom namespace.
+        let n = self.state.pack.resources.vehicles.len() + 1;
+        let ns = format!("mtr:custom/imported_{n}");
+        let obj_id = format!("{ns}/model");
+        let mtl_id = format!("{ns}/model.mtl");
+        let prop_id = format!("{ns}/model_properties.json");
+        let pos_id = format!("{ns}/model_positions.json");
+        let mut texture_resource = String::new();
+        if let Some(tex) = imported.textures.first() {
+            texture_resource = format!("{ns}/{}", tex.filename);
+        }
+
+        // OBJ + MTL + textures.
+        let obj_text = mrpc_core::import::obj_to_text(&imported.obj);
+        self.state.pack.set_resource(&obj_id, "obj", obj_text.into_bytes());
+        let mtl_text = mrpc_core::import::mtl_to_text(&imported.materials);
+        self.state
+            .pack
+            .set_resource(&mtl_id, "mtl", mtl_text.into_bytes());
+        for tex in &imported.textures {
+            let id = format!("{ns}/{}", tex.filename);
+            self.state.pack.set_resource(&id, "png", tex.png.clone());
+        }
+        // Minimal properties / position definitions so validation passes.
+        let props = self.build_model_properties(&imported);
+        self.state
+            .pack
+            .set_resource(&prop_id, "json", serde_json::to_vec(&props).unwrap_or_default());
+        self.state
+            .pack
+            .set_resource(&pos_id, "json", b"{}".to_vec());
+
+        // Attach to the selected vehicle, or create one.
+        let model = mrpc_core::vehicle::VehicleModel {
+            model_resource: obj_id.clone(),
+            texture_resource: texture_resource.clone(),
+            model_properties_resource: prop_id,
+            position_definitions_resource: pos_id,
+            flip_texture_v: imported.flip_texture_v,
+            ..Default::default()
+        };
+        let target = match self.state.selected_vehicle() {
+            Some(vi) => vi,
+            None => {
+                let mut v = mrpc_core::vehicle::VehicleResource::default();
+                v.id = format!("custom_imported_{n}");
+                v.name = p
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| format!("Imported {n}"));
+                self.state.pack.resources.vehicles.push(v);
+                self.state.pack.resources.vehicles.len() - 1
+            }
+        };
+        if let Some(vehicle) = self.state.pack.resources.vehicles.get_mut(target) {
+            vehicle.models.push(model);
+        }
+
+        self.state.selection = Selection::Vehicle(target);
+        self.state.dirty = true;
+        self.reload_model();
+        self.state.revalidate();
+        self.state.status = tf(
+            locale,
+            "import.success",
+            &[
+                ("parts", &imported.obj.parts.len().to_string()),
+                ("verts", &imported.vertex_count().to_string()),
+                ("tex", &imported.textures.len().to_string()),
+            ],
+        );
+    }
+
+    /// Minimal model-properties JSON covering the imported part names.
+    fn build_model_properties(
+        &self,
+        imported: &mrpc_core::import::ImportedModel,
+    ) -> serde_json::Value {
+        let mut arr = Vec::new();
+        for part in &imported.obj.parts {
+            arr.push(serde_json::json!({
+                "name": part.name,
+                "type": "part",
+            }));
+        }
+        serde_json::json!({ "parts": arr })
+    }
+
     /// Parse the current vehicle's BVE sound set.
     pub fn load_bve_data(&mut self) -> Option<mrpc_core::bve::BveMotorData> {
         let vi = self.state.selected_vehicle()?;
@@ -362,7 +603,7 @@ impl MrpcApp {
         let path = std::path::PathBuf::from("vvvf-audition.wav");
         let sr = 48_000u32;
         let params = self.state.vvvf.params;
-        let mut engine = Engine::new(params);
+        let mut synth = Engine::new(params);
         let mut samples: Vec<f32> = Vec::with_capacity((sr * 5) as usize);
         let target = self.state.vvvf.speed_kmh.max(1.0);
         let notch = self.state.vvvf.notch;
@@ -373,21 +614,31 @@ impl MrpcApp {
         } else {
             (notch / 4.0).max(-1.0)
         };
+        // In BVE mode with a loaded sound source, render the real playback.
+        let use_bve = self.state.vvvf.mode == 1 && self.state.vvvf.bve_engine.is_some();
+        let bve_data = self.state.vvvf.bve.clone();
+        let mut bve_engine = self.state.vvvf.bve_engine.clone();
         let blocks = 50;
         let block = (sr as usize * 5) / blocks;
         for b in 0..blocks {
             let t = b as f64 / blocks as f64 * 5.0;
             let speed = if t < 2.0 { target * t / 2.0 } else { target };
             let effort = if t < 3.5 { power } else { 0.0 };
-            let fundamental = if let Some(hz) = self.state.vvvf.bve_fundamental {
-                hz * (speed / target).clamp(0.0, 1.0)
-            } else {
-                let speed_ms = speed / 3.6;
-                let wheel_rps = speed_ms / 0.85;
-                mrpc_vvvf::fundamental_hz(wheel_rps / 6.2, params.pole_pairs)
-            };
             let mut buf = vec![0f32; block];
-            engine.render(fundamental, effort, &mut buf);
+            if use_bve {
+                if let (Some(engine), Some(data)) = (&mut bve_engine, &bve_data) {
+                    engine.render_curves(data, (speed / 3.6) as f32, effort as f32, &mut buf);
+                }
+            } else {
+                let fundamental = if let Some(hz) = self.state.vvvf.bve_fundamental {
+                    hz * (speed / target).clamp(0.0, 1.0)
+                } else {
+                    let speed_ms = speed / 3.6;
+                    let wheel_rps = speed_ms / 0.85;
+                    mrpc_vvvf::fundamental_hz(wheel_rps / 6.2, params.pole_pairs)
+                };
+                synth.render(fundamental, effort, &mut buf);
+            }
             samples.extend_from_slice(&buf);
         }
         match write_wav_mono16(&path, sr, &samples) {
@@ -446,13 +697,29 @@ impl MrpcApp {
         }
     }
 
+    fn process_pending_import(&mut self) {
+        let Some(path) = self.pending_import.clone() else { return };
+        self.pending_import = None;
+        self.import_model_file(&path);
+    }
+
+    fn process_pending_bve_wav(&mut self) {
+        let Some(path) = self.pending_bve_wav.clone() else { return };
+        self.pending_bve_wav = None;
+        self.load_manual_bve_wav(&path);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.process_pending_open();
+        self.process_pending_import();
+        self.process_pending_bve_wav();
         let dt = ui.input(|i| i.unstable_dt).min(0.1);
         self.state.anim.step(dt as f64 * 1000.0);
 
         self.menu_bar(ui);
         self.open_dialog(ui.ctx());
+        self.import_dialog(ui.ctx());
+        self.bve_wav_dialog(ui.ctx());
 
         // VVVF preview synthesis (waveform + spectrum).
         self.update_vvvf_preview();
@@ -472,6 +739,15 @@ impl MrpcApp {
             let bve = self.load_bve_data();
             self.state.vvvf.bve = bve;
         }
+        if self.state.vvvf.mode == 1
+            && self.state.vvvf.bve.is_some()
+            && self.state.vvvf.bve_engine.is_none()
+        {
+            // Try the pack's own motor WAV loops first.
+            if let Some(engine) = self.load_bve_sounds() {
+                self.set_bve_engine(engine);
+            }
+        }
         let vvvf = &mut self.state.vvvf;
         let fundamental = vvvf.fundamental_hz();
         let notch = vvvf.notch;
@@ -484,9 +760,22 @@ impl MrpcApp {
         };
         let mut params = vvvf.params;
         params.speed_fraction = (vvvf.speed_kmh / 130.0).clamp(0.0, 1.0);
-        self.preview_engine = Engine::new(params);
+
+        // Waveform: BVE real-source playback when available, else the synth.
+        let use_bve = vvvf.mode == 1 && vvvf.bve_engine.is_some();
         let mut wave = vec![0f32; 1024];
-        self.preview_engine.render(fundamental, power, &mut wave);
+        if use_bve {
+            let speed_ms = (vvvf.speed_kmh / 3.6) as f32;
+            let data = vvvf.bve.clone();
+            if let Some(engine) = &mut vvvf.bve_engine {
+                if let Some(data) = &data {
+                    engine.render_curves(data, speed_ms, power as f32, &mut wave);
+                }
+            }
+        } else {
+            self.preview_engine = Engine::new(params);
+            self.preview_engine.render(fundamental, power, &mut wave);
+        }
         vvvf.wave = wave;
 
         // Spectrum: log-spaced Goertzel from 30 Hz to 4 kHz.
@@ -500,7 +789,23 @@ impl MrpcApp {
 
         #[cfg(feature = "audio")]
         if let Some(audio) = &mut self.audio {
-            audio.update(params, fundamental, power);
+            if use_bve {
+                let speed_ms = (vvvf.speed_kmh / 3.6) as f32;
+                let n = vvvf.bve_engine.as_ref().map(|e| e.channel_count()).unwrap_or(0);
+                let (rates, gains) = match vvvf.bve.as_ref() {
+                    Some(d) => mrpc_core::bve_playback::BvePlaybackEngine::curve_drive(
+                        d, n, speed_ms, power as f32,
+                    ),
+                    None => (vec![0f32; n], vec![0f32; n]),
+                };
+                audio.update(crate::audio::AudioDrive::Bve { rates, gains });
+            } else {
+                audio.update(crate::audio::AudioDrive::Synth {
+                    params,
+                    fundamental_hz: fundamental,
+                    power,
+                });
+            }
         }
     }
 
@@ -528,6 +833,10 @@ impl MrpcApp {
                     }
                     if ui.button(t(locale, "app.open_demo")).clicked() {
                         open_demo = true;
+                    }
+                    ui.separator();
+                    if ui.button(t(locale, "menu.import")).clicked() {
+                        self.show_import_dialog = true;
                     }
                     ui.separator();
                     if ui.button(t(locale, "app.export")).clicked() {
@@ -633,6 +942,91 @@ impl MrpcApp {
         }
         if close {
             self.show_open_dialog = None;
+        }
+    }
+
+    /// File → Import model path prompt.
+    fn import_dialog(&mut self, ctx: &egui::Context) {
+        let locale = self.state.locale;
+        if !self.show_import_dialog {
+            return;
+        }
+        let mut path = if self.state.vvvf.bve_wav_path.is_empty() {
+            "model.mqo".to_string()
+        } else {
+            self.state.vvvf.bve_wav_path.clone()
+        };
+        // Prefer a dedicated import-path memory over the wav field default.
+        if let Some(last) = &self.state.config.last_open {
+            let dir = std::path::Path::new(last)
+                .parent()
+                .map(|d| d.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if !dir.is_empty() {
+                path = format!("{dir}/model.mqo");
+            }
+        }
+        let mut close = false;
+        let mut apply = false;
+        egui::Window::new(t(locale, "import.title"))
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.label(t(locale, "import.formats"));
+                ui.add(egui::TextEdit::singleline(&mut path).desired_width(420.0));
+                ui.horizontal(|ui| {
+                    if ui.button(t(locale, "common.ok")).clicked() {
+                        apply = true;
+                        close = true;
+                    }
+                    if ui.button(t(locale, "common.cancel")).clicked() {
+                        close = true;
+                    }
+                });
+            });
+        if apply {
+            self.pending_import = Some(path);
+        }
+        if close {
+            self.show_import_dialog = false;
+        }
+    }
+
+    /// Manual BVE motor WAV loop path prompt.
+    fn bve_wav_dialog(&mut self, ctx: &egui::Context) {
+        let locale = self.state.locale;
+        if !self.show_bve_wav_dialog {
+            return;
+        }
+        let mut path = if self.state.vvvf.bve_wav_path.is_empty() {
+            "motor_loop.wav".to_string()
+        } else {
+            self.state.vvvf.bve_wav_path.clone()
+        };
+        let mut close = false;
+        let mut apply = false;
+        egui::Window::new(t(locale, "vvvf.bve_load"))
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.label(t(locale, "vvvf.bve_hint"));
+                ui.add(egui::TextEdit::singleline(&mut path).desired_width(420.0));
+                ui.horizontal(|ui| {
+                    if ui.button(t(locale, "common.ok")).clicked() {
+                        apply = true;
+                        close = true;
+                    }
+                    if ui.button(t(locale, "common.cancel")).clicked() {
+                        close = true;
+                    }
+                });
+            });
+        if apply {
+            self.state.vvvf.bve_wav_path = path.clone();
+            self.pending_bve_wav = Some(path);
+        }
+        if close {
+            self.show_bve_wav_dialog = false;
         }
     }
 

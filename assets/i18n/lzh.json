@@ -291,5 +291,15 @@
   "common.default": "固有",
   "common.reset": "復",
   "common.browse": "覽…",
-  "common.refresh": "更新"
+  "common.refresh": "更新",
+  "menu.import": "納模形…",
+  "import.title": "納模形",
+  "import.formats": "Metasequoia .mqo / .mqoz · glTF .gltf / .glb",
+  "import.success": "已納部件 {parts}、頂點 {verts}、貼圖 {tex}",
+  "import.failed": "納之不成：{msg}",
+  "vvvf.bve_playback": "真音之源，播之",
+  "vvvf.bve_no_source": "此音源無馬達 WAV 之環——請於下書 WAV 之徑。",
+  "vvvf.bve_load": "載馬達 WAV",
+  "vvvf.bve_loaded": "已載聲道 {n}",
+  "vvvf.bve_hint": "環音循頻率之表而變其速，循音量之表而變其聲（BVE 馬達之義也）。"
 }

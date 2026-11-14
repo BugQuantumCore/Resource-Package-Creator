@@ -291,5 +291,15 @@
   "common.default": "預設",
   "common.reset": "重設",
   "common.browse": "瀏覽…",
-  "common.refresh": "重新整理"
+  "common.refresh": "重新整理",
+  "menu.import": "匯入模型…",
+  "import.title": "匯入模型",
+  "import.formats": "Metasequoia .mqo / .mqoz · glTF .gltf / .glb",
+  "import.success": "已匯入 {parts} 個部件、{verts} 個頂點、{tex} 張貼圖",
+  "import.failed": "匯入失敗：{msg}",
+  "vvvf.bve_playback": "真實音源播放",
+  "vvvf.bve_no_source": "此音源集未包含馬達 WAV 迴圈——請在下方填寫 WAV 路徑。",
+  "vvvf.bve_load": "載入馬達 WAV",
+  "vvvf.bve_loaded": "已載入 {n} 個聲道",
+  "vvvf.bve_hint": "迴圈 WAV 依頻率表速率、音量表音量播放（BVE 馬達噪音語義）。"
 }

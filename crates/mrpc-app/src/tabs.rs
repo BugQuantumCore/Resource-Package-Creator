@@ -447,6 +447,48 @@ fn bve_curves(app: &mut MrpcApp, ui: &mut egui::Ui, locale: Locale) {
         fundamental * base_hz.max(1.0) / base_hz * base_hz,
         volume
     ));
+
+    // ---- real-sound-source playback --------------------------------------
+    ui.separator();
+    ui.strong(t(locale, "vvvf.bve_playback"));
+    match app.state.vvvf.bve_engine.as_ref() {
+        Some(engine) => {
+            ui.weak(tf(
+                locale,
+                "vvvf.bve_loaded",
+                &[("n", &engine.channel_count().to_string())],
+            ));
+            ui.monospace(format!(
+                "loop ≈ {:.2} s · {}",
+                engine.loop_duration(),
+                if app.state.vvvf.playing {
+                    t(locale, "vvvf.play")
+                } else {
+                    t(locale, "vvvf.stop")
+                }
+            ));
+        }
+        None => {
+            ui.weak(t(locale, "vvvf.bve_no_source"));
+        }
+    }
+    ui.horizontal(|ui| {
+        let mut wav_path = app.state.vvvf.bve_wav_path.clone();
+        ui.label(t(locale, "vvvf.bve_load"));
+        if ui
+            .add(egui::TextEdit::singleline(&mut wav_path).desired_width(240.0).hint_text("motor_loop.wav"))
+            .changed()
+        {
+            app.state.vvvf.bve_wav_path = wav_path;
+        }
+        if ui.button(t(locale, "common.ok")).clicked() {
+            let path = app.state.vvvf.bve_wav_path.clone();
+            if !path.is_empty() {
+                app.load_manual_bve_wav(&path);
+            }
+        }
+    });
+    ui.weak(t(locale, "vvvf.bve_hint"));
 }
 
 fn legacy_sounds(app: &mut MrpcApp, ui: &mut egui::Ui, locale: Locale) {

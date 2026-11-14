@@ -291,5 +291,15 @@
   "common.default": "Par défaut",
   "common.reset": "Réinitialiser",
   "common.browse": "Parcourir…",
-  "common.refresh": "Actualiser"
+  "common.refresh": "Actualiser",
+  "menu.import": "Importer un modèle…",
+  "import.title": "Importer un modèle",
+  "import.formats": "Metasequoia .mqo / .mqoz · glTF .gltf / .glb",
+  "import.success": "{parts} partie(s), {verts} sommet(s) et {tex} texture(s) importés",
+  "import.failed": "Échec de l'import : {msg}",
+  "vvvf.bve_playback": "Lecture de source sonore réelle",
+  "vvvf.bve_no_source": "Aucune boucle WAV de moteur dans ce jeu sonore — saisissez un chemin WAV ci-dessous.",
+  "vvvf.bve_load": "Charger le WAV du moteur",
+  "vvvf.bve_loaded": "{n} canal/canaux chargé(s)",
+  "vvvf.bve_hint": "La boucle WAV est lue au rythme de la table de fréquences et au volume de la table des volumes (sémantique du bruit moteur BVE)."
 }

@@ -291,5 +291,15 @@
   "common.default": "Default",
   "common.reset": "Reset",
   "common.browse": "Browse…",
-  "common.refresh": "Refresh"
+  "common.refresh": "Refresh",
+  "menu.import": "Import model…",
+  "import.title": "Import model",
+  "import.formats": "Metasequoia .mqo / .mqoz · glTF .gltf / .glb",
+  "import.success": "Imported {parts} part(s), {verts} vertex(ices), {tex} texture(s)",
+  "import.failed": "Import failed: {msg}",
+  "vvvf.bve_playback": "Real sound source playback",
+  "vvvf.bve_no_source": "No motor WAV loops in this sound set — enter a WAV path below.",
+  "vvvf.bve_load": "Load motor WAV",
+  "vvvf.bve_loaded": "{n} channel(s) loaded",
+  "vvvf.bve_hint": "The loop WAV plays at the frequency-table rate and volume-table gain (BVE motor noise semantics)."
 }

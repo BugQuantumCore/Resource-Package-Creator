@@ -119,6 +119,10 @@ pub struct VvvfPanel {
     pub bve_config: Option<mrpc_core::bve::BveConfig>,
     /// Fundamental override while auditioning BVE curves.
     pub bve_fundamental: Option<f64>,
+    /// Real-sound-source playback engine (curves drive loop resampling).
+    pub bve_engine: Option<mrpc_core::bve_playback::BvePlaybackEngine>,
+    /// Manual WAV loop path for vehicles whose sound set has no WAV loops.
+    pub bve_wav_path: String,
     pub message: Option<String>,
 }
 
@@ -139,6 +143,8 @@ impl Default for VvvfPanel {
             bve: None,
             bve_config: None,
             bve_fundamental: None,
+            bve_engine: None,
+            bve_wav_path: String::new(),
             message: None,
         }
     }
