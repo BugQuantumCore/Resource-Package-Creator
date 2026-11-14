@@ -19,7 +19,7 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install Linux audio headers
@@ -27,6 +27,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       - name: Run tests
         run: cargo test --workspace
+      - name: Check audio feature
+        run: cargo check -p mrpc-app --features audio
 
   build:
     name: Build (${{ matrix.os }})
@@ -42,7 +44,7 @@ jobs:
             artifact: mtr-resource-package-creator-macos-arm64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install Linux audio headers
@@ -69,7 +71,7 @@ jobs:
     name: Build (Linux, no audio deps)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build release binary (no audio feature)

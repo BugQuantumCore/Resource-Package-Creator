@@ -7,6 +7,8 @@
 mod imp {
     use std::sync::{Arc, Mutex};
 
+    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+
     use mrpc_vvvf::{Engine, VvvfParams};
 
     #[derive(Clone, Copy)]
@@ -36,7 +38,8 @@ mod imp {
             let config = device
                 .default_output_config()
                 .map_err(|e| e.to_string())?;
-            let sample_rate = config.sample_rate().0 as f64;
+            // cpal 0.18: `SampleRate` is a plain `u32` type alias.
+            let sample_rate = config.sample_rate() as f64;
             let channels = config.channels() as usize;
             let stream_config = cpal::StreamConfig {
                 channels: config.channels(),
@@ -58,9 +61,10 @@ mod imp {
 
             let shared_cb = shared.clone();
             let err_fn = |err| eprintln!("[audio] {err}");
+            // cpal 0.18 takes the stream config by value.
             let stream = device
                 .build_output_stream(
-                    &stream_config,
+                    stream_config,
                     move |data: &mut [f32], _info: &cpal::OutputCallbackInfo| {
                         let snapshot = {
                             let guard = shared_cb.state.lock().unwrap();
