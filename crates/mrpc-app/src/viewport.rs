@@ -405,6 +405,13 @@ impl CallbackTrait for ViewportCallback {
         let scene = &*scene_guard;
 
         // Rebuild GPU buffers when the CPU scene signature changed.
+        //
+        // Lock discipline: `scene` is locked ONCE here and the guard is held
+        // across the whole pass. `build_gpu_scene` therefore takes the scene
+        // BY REFERENCE and must never lock `shared.scene` itself: a plain
+        // `std::sync::Mutex` is not reentrant, so re-locking it from the same
+        // thread deadlocks the first frame forever (a process with no window).
+        // The same rule applies to any future helper called from here.
         let signature = (
             scene.meshes.len(),
             scene.instances.len(),
@@ -417,7 +424,7 @@ impl CallbackTrait for ViewportCallback {
                     != gpu.as_ref().and_then(|g| g.tex_size);
             if needs_rebuild {
                 *gpu = None;
-                *gpu = Some(build_gpu_scene(device, queue, &self.shared, &globals));
+                *gpu = Some(build_gpu_scene(device, queue, &self.shared, scene, &globals));
             }
             if let Some(g) = gpu.as_mut() {
                 queue.write_buffer(&g.uniform_buf, 0, bytemuck::bytes_of(&globals));
@@ -482,6 +489,10 @@ impl CallbackTrait for ViewportCallback {
         render_pass: &mut wgpu::RenderPass<'static>,
         _resources: &egui_wgpu::CallbackResources,
     ) {
+        // Take the short-lived `scene` lock BEFORE the `gpu` lock so no call
+        // path ever holds two viewport locks at once (defense in depth
+        // against cross-order deadlocks between threads).
+        let grid = self.shared.scene.lock().map(|g| g.grid).unwrap_or(true);
         let gpu = self.shared.gpu.lock().unwrap();
         let Some(g) = gpu.as_ref() else { return };
         if g.instance_count > 0 {
@@ -494,7 +505,7 @@ impl CallbackTrait for ViewportCallback {
                 render_pass.draw_indexed(*offset..(*offset + *count), 0, 0..g.instance_count as u32);
             }
         }
-        if self.shared.scene.lock().unwrap().grid && g.line_count > 0 {
+        if grid && g.line_count > 0 {
             render_pass.set_pipeline(&g.line_pipeline);
             render_pass.set_bind_group(0, &g.bind_group, &[]);
             render_pass.set_vertex_buffer(0, g.line_buf.slice(..));
@@ -506,10 +517,16 @@ impl CallbackTrait for ViewportCallback {
 
 /// Extra state kept alongside the pipeline for rebuild detection.
 
+/// Builds the GPU resources for the current scene.
+///
+/// `scene` is the already-locked scene snapshot owned by the caller — this
+/// function must NOT lock `shared.scene` (see the lock-discipline note in
+/// [`ViewportCallback::prepare`]: the caller's guard is still held).
 fn build_gpu_scene(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     shared: &ViewportShared,
+    scene: &SceneCpu,
     globals: &Globals,
 ) -> GpuScene {
     use wgpu::util::DeviceExt;
@@ -647,8 +664,7 @@ fn build_gpu_scene(
     let mut all_indices: Vec<u32> = Vec::new();
     let mut mesh_ranges: Vec<(u32, u32)> = Vec::new();
     let flip_v = *shared.flip_texture_v.lock().unwrap();
-    let scene_guard = shared.scene.lock().unwrap();
-    for mesh in &scene_guard.meshes {
+    for mesh in &scene.meshes {
         let base = all_vertices.len() as u32;
         for v in &mesh.vertices {
             all_vertices.push(ViewportVertex {
@@ -796,12 +812,11 @@ fn build_gpu_scene(
     });
 
     let signature = (
-        scene_guard.meshes.len(),
-        scene_guard.instances.len(),
-        scene_guard.meshes.iter().map(|m| m.vertices.len() + m.indices.len()).sum::<usize>(),
+        scene.meshes.len(),
+        scene.instances.len(),
+        scene.meshes.iter().map(|m| m.vertices.len() + m.indices.len()).sum::<usize>(),
     );
-    let instance_count = scene_guard.instances.len();
-    drop(scene_guard);
+    let instance_count = scene.instances.len();
 
     GpuScene {
         mesh_pipeline,

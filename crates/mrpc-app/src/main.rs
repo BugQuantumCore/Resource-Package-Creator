@@ -75,11 +75,25 @@ fn main() -> eframe::Result<()> {
         .and_then(Locale::from_tag)
         .unwrap_or(Locale::ZhCn);
 
+    // Normal launch: hardware first, software as a retry. `MRPC_RENDERER`
+    // pins the plan instead (the startup watchdog's auto-relaunch uses it to
+    // force the software renderer, and users can set it by hand for testing).
+    let plans: Vec<RendererPlan> = match renderer_plan_from_env() {
+        Some(single) => {
+            log::info!(
+                "renderer pinned via MRPC_RENDERER: {}",
+                single.describe()
+            );
+            vec![single]
+        }
+        None => vec![RendererPlan::HardwareFirst, RendererPlan::ForceSoftware],
+    };
+
     let mut last_err: Option<String> = None;
-    for plan in [RendererPlan::HardwareFirst, RendererPlan::ForceSoftware] {
+    for plan in &plans {
         log::info!("launch attempt: {}", plan.describe());
         logging::set_stage(Stage::RunNative);
-        let options = native_options(plan);
+        let options = native_options(*plan);
         let cfg = config.clone();
         let result = eframe::run_native(
             APP_NAME,
@@ -105,22 +119,28 @@ fn main() -> eframe::Result<()> {
         }
     }
 
-    // Both attempts failed: make the failure visible instead of exiting
+    // All attempts failed: make the failure visible instead of exiting
     // silently behind the windows_subsystem attribute.
     let log_hint = match logging::log_path() {
         Some(p) => format!("A full log was written to:\n{}", p.display()),
         None => "No log file could be written.".to_string(),
     };
+    let attempts = plans
+        .iter()
+        .map(|p| p.describe())
+        .collect::<Vec<_>>()
+        .join(", then ");
     logging::alert(
         "MTR Resource Package Creator failed to start",
         &format!(
             "{} could not create a window or graphics device.\n\n\
              Reason: {}\n\n\
-             Both the hardware GPU and the software renderer (WARP) were tried.\n\n\
+             Renderers tried: {attempts}.\n\n\
              {log_hint}\n\n\
              Tips:\n\
              \u{2022} Update your graphics driver and try again.\n\
              \u{2022} Try setting the environment variable WGPU_BACKEND=gl.\n\
+             \u{2022} Try setting MRPC_RENDERER=software to force WARP.\n\
              \u{2022} Try setting MRPC_NO_AUDIO=1 to rule out audio-driver issues.\n\n\
              Please report this at:\n\
              https://github.com/BugQuantumCore/Resource-Package-Creator/issues",
@@ -129,6 +149,24 @@ fn main() -> eframe::Result<()> {
         ),
     );
     std::process::exit(1);
+}
+
+/// The launch plan pinned by the `MRPC_RENDERER` environment variable, if any
+/// (`software`/`warp` forces the software renderer, `hardware`/`gpu` pins the
+/// hardware plan; anything else means "default ladder"). Kept as a pure
+/// string function so it can be unit-tested.
+fn plan_from_env_value(value: &str) -> Option<RendererPlan> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "software" | "warp" | "llvmpipe" => Some(RendererPlan::ForceSoftware),
+        "hardware" | "gpu" => Some(RendererPlan::HardwareFirst),
+        _ => None,
+    }
+}
+
+fn renderer_plan_from_env() -> Option<RendererPlan> {
+    std::env::var("MRPC_RENDERER")
+        .ok()
+        .and_then(|v| plan_from_env_value(&v))
 }
 
 fn native_options(plan: RendererPlan) -> eframe::NativeOptions {
@@ -274,6 +312,35 @@ fn select_adapter_software_first(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn renderer_env_overrides_parse() {
+        assert!(matches!(
+            plan_from_env_value("software"),
+            Some(RendererPlan::ForceSoftware)
+        ));
+        assert!(matches!(
+            plan_from_env_value(" WARP "),
+            Some(RendererPlan::ForceSoftware)
+        ));
+        assert!(matches!(
+            plan_from_env_value("LLVMPIPE"),
+            Some(RendererPlan::ForceSoftware)
+        ));
+        assert!(matches!(
+            plan_from_env_value("hardware"),
+            Some(RendererPlan::HardwareFirst)
+        ));
+        assert!(matches!(
+            plan_from_env_value("gpu"),
+            Some(RendererPlan::HardwareFirst)
+        ));
+        assert!(matches!(plan_from_env_value(""), None::<RendererPlan>));
+        assert!(matches!(
+            plan_from_env_value("integrated"),
+            None::<RendererPlan>
+        ));
+    }
 
     #[test]
     fn vulkan_is_preferred_over_dx12_for_equal_hardware() {

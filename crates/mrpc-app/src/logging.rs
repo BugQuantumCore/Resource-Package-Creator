@@ -200,8 +200,12 @@ pub fn startup_complete() -> bool {
 /// been painted (no white flash). Any indefinite hang between process start
 /// and that first present therefore shows up as "a process exists, but no
 /// window ever appears". Instead of leaving such a zombie behind, the
-/// watchdog reports the last reached stage to the log, shows a native
-/// dialog, and exits with code 2 once the dialog is acknowledged.
+/// watchdog escalates: it first relaunches the app with the software renderer
+/// (WARP / llvmpipe, via `MRPC_RENDERER=software`) — a hang in the hardware
+/// driver then costs the user nothing but a late window — and only if a
+/// relaunch is not allowed (already relaunched, or the renderer was pinned via
+/// `MRPC_RENDERER`) or the respawn itself fails does it report the last
+/// reached stage, show the failure dialog and exit with code 2.
 pub fn spawn_startup_watchdog(timeout_secs: u64) {
     let spawned = std::thread::Builder::new()
         .name("startup-watchdog".to_string())
@@ -215,6 +219,17 @@ pub fn spawn_startup_watchdog(timeout_secs: u64) {
             }
             if startup_complete() {
                 return;
+            }
+            if let Some(child_pid) = relaunch_with_software_renderer() {
+                log::error!(
+                    "startup watchdog: no first frame after {timeout_secs}s; \
+                     last stage reached: {} — restarted with the software renderer \
+                     (WARP / llvmpipe, child pid {child_pid})",
+                    current_stage().map(Stage::describe).unwrap_or("unknown")
+                );
+                // The respawned child is on its way; end the hung process so
+                // it does not linger as a windowless zombie.
+                std::process::exit(2);
             }
             let stage = current_stage().map(Stage::describe).unwrap_or("unknown");
             log::error!(
@@ -253,6 +268,36 @@ pub fn spawn_startup_watchdog(timeout_secs: u64) {
     if let Err(err) = spawned {
         log::warn!("could not spawn the startup watchdog: {err}");
     }
+}
+
+/// Respawns this executable with the software renderer forced, for use when
+/// the startup watchdog detects a hung first frame. Returns the child's PID
+/// when the respawn actually happened; `None` when escalation is not allowed
+/// (this is already the relaunched child, or the renderer was pinned manually
+/// with `MRPC_RENDERER`) or the spawn itself failed.
+///
+/// The child gets `MRPC_WD_CHILD=1`, so ITS watchdog never relaunches again —
+/// if the software renderer also hangs, the child shows the failure dialog
+/// and exits instead of looping forever.
+fn relaunch_with_software_renderer() -> Option<u32> {
+    let already_child =
+        std::env::var("MRPC_WD_CHILD").map(|v| !v.is_empty()).unwrap_or(false);
+    let pinned_renderer =
+        std::env::var("MRPC_RENDERER").map(|v| !v.is_empty()).unwrap_or(false);
+    if already_child || pinned_renderer {
+        return None;
+    }
+    let exe = std::env::current_exe().ok()?;
+    let child = std::process::Command::new(exe)
+        .env("MRPC_RENDERER", "software")
+        .env("MRPC_WD_CHILD", "1")
+        .spawn()
+        .map_err(|err| {
+            log::error!("startup watchdog: could not relaunch the app: {err}");
+            err
+        })
+        .ok()?;
+    Some(child.id())
 }
 
 /// Logs the message and shows a native error dialog (Windows) or writes to

@@ -41,20 +41,20 @@ installers — Windows `.msi` (Program Files + Start Menu shortcut), Linux
 `.deb` / `.rpm` (depend on libasound2), and macOS `.dmg` containing the `.app`
 bundle (Apple Silicon; first launch may need right-click → Open).
 
-## Troubleshooting startup problems (v0.2.1, hardened in v0.2.2)
+## Troubleshooting startup problems (v0.2.1, hardened in v0.2.2, root-caused in v0.2.3)
 
 Startup is fail-visible instead of failing silently behind
 `windows_subsystem`: startup errors raise a native dialog and are written to a
 log file; the graphics device is retried with a software renderer
 (WARP / llvmpipe); audio is opened on a background thread and can never block
-the first frame. v0.2.2 additionally targets the observed "a process exists
-but no window appears": the first present now uses a non-blocking present
-mode (eframe intentionally keeps the window hidden until the first frame is
-painted, and a FIFO/vsync first present has been observed to block forever
-on some Windows + NVIDIA driver combinations); on Windows the Vulkan backend
-is preferred over DX12 for equal hardware; and a startup watchdog pops a
-dialog naming the stage where startup stalled (with the timing trail in the
-log) instead of leaving a windowless process behind.
+the first frame. v0.2.2 added a startup watchdog and per-stage logging for the
+observed "a process exists but no window appears"; **v0.2.3 found and fixed
+the actual root cause: the first viewport paint pass locked the same
+non-reentrant `Mutex` twice on one thread, deadlocking the first frame
+forever — independent of backend (DX12/Vulkan/GL) and driver, and reproducible
+on every platform**. The watchdog also escalates now: if the hardware GPU
+fails to produce a first frame within 20 seconds, the app relaunches itself
+once with the software renderer (WARP / llvmpipe) instead of just exiting.
 
 * The log records every startup stage with a timestamp
   (`startup stage: …`), which pinpoints where a slow/hung start is.
@@ -62,7 +62,9 @@ log) instead of leaving a windowless process behind.
   `%LOCALAPPDATA%\mtr-resource-package-creator\app.log` when the exe directory
   is read-only (Program Files); on Linux
   `~/.local/state/mtr-resource-package-creator/app.log`.
-* Diagnostic switches: `MRPC_LOG_LEVEL=debug`, `MRPC_VSYNC=1` (restore FIFO
+* Diagnostic switches: `MRPC_LOG_LEVEL=debug`, `MRPC_RENDERER=software|hardware`
+  (pin the renderer; the watchdog's auto-relaunch uses it too, and setting it
+  by hand disables the auto-relaunch), `MRPC_VSYNC=1` (restore FIFO
   vsync; off by default), `MRPC_NO_AUDIO=1`, `WGPU_BACKEND=gl`,
   `WGPU_POWER_PREF=low`.
 * If a dialog reports a startup failure, please attach the log file at
