@@ -76,10 +76,11 @@
                       WorkingDirectory="INSTALLDIR"
                       Icon="AppIcon"/>
             <RemoveFolder Id="RemoveShortcutsDir" On="uninstall"/>
-            <!-- HKMU resolves to HKLM for per-machine installs and HKCU for
-                 per-user installs, which is what ICE38/43/57 require for
-                 shortcut components under ProgramMenuFolder. -->
-            <RegistryValue Root="HKMU"
+            <!-- Canonical WiX pattern for shortcut components: the registry
+                 KeyPath must live under HKCU (ICE38/43/57), because
+                 ProgramMenuFolder is validated as a user-profile location
+                 regardless of the install scope. -->
+            <RegistryValue Root="HKCU"
                            Key="Software\BugQuantumCore\MTRResourcePackageCreator"
                            Name="installed"
                            Type="integer"
