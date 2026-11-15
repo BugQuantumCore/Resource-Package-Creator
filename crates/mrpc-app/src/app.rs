@@ -32,6 +32,11 @@ pub struct MrpcApp {
     /// built for: `build_scene` clones every vertex, so it must not run per
     /// frame while nothing changed (real packs hold thousands of vertices).
     last_scene_key: Option<(u64, u64, bool, Selection, bool)>,
+    /// Outliner PNG asset preview: (resource path, decoded handle) — decoded
+    /// and uploaded once per selection change, not every frame. `None` inside
+    /// the tuple marks a file that failed to decode (cached so it isn't
+    /// re-decoded each frame either).
+    pub(crate) asset_preview: Option<(String, Option<egui::TextureHandle>)>,
     /// File → 预览添加 flow state: pick a .zip or folder with the system
     /// file dialog, preview the pack, then add it to the current pack.
     preview_add: Option<PreviewAdd>,
@@ -162,6 +167,7 @@ impl MrpcApp {
             viewport_version: u64::MAX,
             last_texture_size: None,
             last_scene_key: None,
+            asset_preview: None,
             preview_add: None,
             pending_import: None,
             show_import_dialog: false,
@@ -702,7 +708,10 @@ impl MrpcApp {
 
     /// Render a 5-second audition WAV.
     pub fn render_vvvf_wav(&mut self) {
-        let path = std::path::PathBuf::from("vvvf-audition.wav");
+        // Into the user's Documents/home dir, not the CWD — launched from
+        // a Program Files shortcut the CWD isn't writable and the write
+        // would just fail.
+        let path = crate::state::default_output_dir().join("vvvf-audition.wav");
         let sr = 48_000u32;
         let params = self.state.vvvf.params;
         let mut synth = Engine::new(params);
@@ -946,9 +955,13 @@ impl MrpcApp {
 
         crate::panels::outliner_panel(self, ui);
         crate::panels::properties_panel(self, ui);
+        // The status bar must be laid out BEFORE the CentralPanel: a bottom
+        // panel added after it is allocated from a zero-height rect (the
+        // CentralPanel consumes everything left), so it never rendered —
+        // hiding the status readout AND the ⌃ bottom-panel-reopen button.
+        self.status_bar(ui);
         bottom_tabs(self, ui);
         self.viewport_center(ui);
-        self.status_bar(ui);
 
         // Push the scene to the render thread each frame.
         self.sync_viewport();
@@ -1443,7 +1456,9 @@ impl MrpcApp {
                 let d = response.drag_delta();
                 self.state.cam.orbit(d.x, d.y);
             }
-            if response.dragged_by(egui::PointerButton::Secondary) {
+            if response.dragged_by(egui::PointerButton::Secondary)
+                || response.dragged_by(egui::PointerButton::Middle)
+            {
                 let d = response.drag_delta();
                 self.state.cam.pan(d.x, d.y);
             }
@@ -1451,6 +1466,13 @@ impl MrpcApp {
                 let scroll = ui.input(|i| i.smooth_scroll_delta.y);
                 if scroll != 0.0 {
                     self.state.cam.zoom(scroll);
+                }
+                // Trackpad pinch / touchscreen zoom gesture (egui reports it
+                // as a multiplicative delta; 1.0 = none). Without this, zoom
+                // was impossible on touch devices.
+                let pinch = ui.input(|i| i.zoom_delta());
+                if pinch != 1.0 {
+                    self.state.cam.zoom((pinch - 1.0) * 4000.0);
                 }
             }
 

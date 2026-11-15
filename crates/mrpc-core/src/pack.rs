@@ -9,7 +9,7 @@
 //! assets/mtr/<custom paths…>     (models, textures, properties, sounds, scripts)
 //! ```
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Write};
 use std::path::Path;
 
@@ -29,6 +29,8 @@ pub enum PackError {
     BadResources(#[from] serde_json::Error),
     #[error("path is not a resource pack (missing {CUSTOM_RESOURCES_PATH})")]
     NotAPack,
+    #[error("folder import exceeded the safety cap ({0} files / 1 GiB) — pick the pack's own folder")]
+    TooBig(usize),
 }
 
 /// `pack.mcmeta`.
@@ -57,6 +59,10 @@ pub struct ResourcePack {
     pub resources: CustomResources,
     /// All files, path → bytes (forward slashes, no leading slash).
     pub files: BTreeMap<String, Vec<u8>>,
+    /// Lowercased path → actual key, for the case-insensitive fallback in
+    /// [`ResourcePack::resource`] (packs authored on Windows frequently
+    /// carry `Assets/mtr/...` while the JSON references lowercase ids).
+    pub(crate) lower_index: HashMap<String, String>,
     /// Parse/consistency diagnostics produced while loading.
     pub load_errors: Vec<String>,
 }
@@ -128,18 +134,23 @@ impl ResourcePack {
     ///   across when the current pack has none.
     pub fn merge_from(&mut self, other: ResourcePack) -> MergeStats {
         let mut stats = MergeStats::default();
-        let ResourcePack { mut resources, files, mcmeta: _, load_errors: _ } = other;
+        let ResourcePack { mut resources, files, mcmeta: _, load_errors: _, lower_index: _ } = other;
 
         // ---- files (current pack wins on conflict) ----
+        let mut lower_dirty = false;
         for (path, bytes) in files {
             match self.files.get(&path) {
                 Some(existing) if *existing != bytes => stats.files_kept += 1,
                 Some(_) => {} // identical — nothing to do
                 None => {
                     self.files.insert(path, bytes);
+                    lower_dirty = true;
                     stats.files_added += 1;
                 }
             }
+        }
+        if lower_dirty {
+            self.rebuild_lower_index();
         }
 
         // ---- vehicle scripts (rename on collision, remember the mapping) ----
@@ -270,6 +281,7 @@ impl ResourcePack {
             },
             resources: CustomResources::default(),
             files: BTreeMap::new(),
+            lower_index: HashMap::new(),
             load_errors: Vec::new(),
         }
     }
@@ -327,7 +339,18 @@ impl ResourcePack {
             }
         };
 
-        Ok(ResourcePack { mcmeta, resources, files, load_errors })
+        let lower_index = files.keys().map(|k| (k.to_lowercase(), k.clone())).collect();
+        Ok(ResourcePack { mcmeta, resources, files, lower_index, load_errors })
+    }
+
+    /// Rebuild the lowercased path → key index used by the case-insensitive
+    /// fallback in [`ResourcePack::resource`].
+    fn rebuild_lower_index(&mut self) {
+        self.lower_index = self
+            .files
+            .keys()
+            .map(|k| (k.to_lowercase(), k.clone()))
+            .collect();
     }
 
     /// Write the pack (including edited `mtr_custom_resources.json` and
@@ -384,9 +407,19 @@ impl ResourcePack {
         if !path.contains('.') {
             candidates.push(format!("assets/{namespace}/{path}.{default_ext}"));
         }
-        for c in candidates {
-            if let Some(bytes) = self.files.get(&c) {
+        for c in &candidates {
+            if let Some(bytes) = self.files.get(c) {
                 return Some(bytes);
+            }
+        }
+        // Case-insensitive fallback: packs authored on Windows frequently
+        // carry `Assets/mtr/...` while the JSON references lowercase ids —
+        // without this every model/texture of such a pack reads as missing.
+        for c in &candidates {
+            if let Some(key) = self.lower_index.get(&c.to_lowercase()) {
+                if let Some(bytes) = self.files.get(key) {
+                    return Some(bytes);
+                }
             }
         }
         None
@@ -403,6 +436,7 @@ impl ResourcePack {
         } else {
             format!("assets/{namespace}/{path}")
         };
+        self.lower_index.insert(file.to_lowercase(), file.clone());
         self.files.insert(file, bytes);
     }
 
@@ -413,20 +447,50 @@ impl ResourcePack {
 }
 
 fn collect_files(root: &Path, dir: &Path, out: &mut BTreeMap<String, Vec<u8>>) -> Result<(), PackError> {
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_files(root, &path, out)?;
-        } else {
-            let rel = path.strip_prefix(root).unwrap_or(&path);
-            let key = rel.to_string_lossy().replace('\\', "/");
-            let mut bytes = Vec::new();
-            std::fs::File::open(&path)?.read_to_end(&mut bytes)?;
-            out.insert(key, bytes);
+    // Depth cap + symlink skip + total-size cap, so picking the wrong folder
+    // (Downloads) or a Windows junction cycle can't recurse forever or load
+    // unbounded bytes into RAM on the UI thread.
+    const MAX_DEPTH: usize = 32;
+    const MAX_FILES: usize = 65_536;
+    const MAX_TOTAL_BYTES: usize = 1024 * 1024 * 1024; // 1 GiB
+    fn walk(
+        root: &Path,
+        dir: &Path,
+        out: &mut BTreeMap<String, Vec<u8>>,
+        depth: usize,
+        files_seen: &mut usize,
+        bytes_seen: &mut usize,
+    ) -> Result<(), PackError> {
+        if depth > MAX_DEPTH {
+            return Ok(()); // symlink/junction loop escaped the cap — stop quietly
         }
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let meta = std::fs::symlink_metadata(&path)?;
+            // Symlinks and Windows junctions: skip, don't follow.
+            if meta.file_type().is_symlink() {
+                continue;
+            }
+            if meta.is_dir() {
+                walk(root, &path, out, depth + 1, files_seen, bytes_seen)?;
+            } else if meta.is_file() {
+                *files_seen += 1;
+                if *files_seen > MAX_FILES || *bytes_seen + meta.len() as usize > MAX_TOTAL_BYTES {
+                    return Err(PackError::TooBig(*files_seen));
+                }
+                let rel = path.strip_prefix(root).unwrap_or(&path);
+                let key = rel.to_string_lossy().replace('\\', "/");
+                let mut bytes = Vec::new();
+                std::fs::File::open(&path)?.read_to_end(&mut bytes)?;
+                *bytes_seen += bytes.len();
+                out.insert(key, bytes);
+            }
+        }
+        Ok(())
     }
-    Ok(())
+    let (mut files_seen, mut bytes_seen) = (0usize, 0usize);
+    walk(root, dir, out, 0, &mut files_seen, &mut bytes_seen)
 }
 
 /// Append `incoming` pass-through values to `target`, skipping values that are
@@ -516,6 +580,33 @@ fn default_pack_png() -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn case_insensitive_resource_lookup() {
+        // Packs authored on Windows often carry `Assets/MTR/...` while the
+        // JSON references lowercase ids — the fallback index must resolve.
+        let mut files = BTreeMap::new();
+        files.insert("pack.mcmeta".to_string(), b"{}".to_vec());
+        files.insert(
+            CUSTOM_RESOURCES_PATH.to_string(),
+            b"{}".to_vec(),
+        );
+        files.insert("Assets/MTR/Custom/Train.obj".to_string(), b"model".to_vec());
+        let pack = ResourcePack::from_files(files).unwrap();
+        assert_eq!(
+            pack.resource("mtr:custom/train.obj", "obj"),
+            Some(&b"model"[..])
+        );
+        // Extension-less id resolves via the default-extension candidate.
+        let mut files2 = BTreeMap::new();
+        files2.insert("pack.mcmeta".to_string(), b"{}".to_vec());
+        files2.insert(CUSTOM_RESOURCES_PATH.to_string(), b"{}".to_vec());
+        files2.insert("ASSETS/mtr/textures/SIDE.png".to_string(), b"png".to_vec());
+        let pack2 = ResourcePack::from_files(files2).unwrap();
+        assert_eq!(pack2.resource("mtr:textures/side", "png"), Some(&b"png"[..]));
+        // And a genuinely missing id still misses.
+        assert!(pack.resource("mtr:custom/nope.obj", "obj").is_none());
+    }
 
     #[test]
     fn roundtrip_zip() {

@@ -19,6 +19,9 @@ use std::ffi::{c_char, c_double, c_void, CStr};
 use std::os::raw::{c_int as RawCInt};
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rquickjs::prelude::Opt;
 use rquickjs::{Context, Ctx, Function, Object, Runtime, Value};
@@ -123,6 +126,33 @@ pub struct JsSandbox {
     sim: Shared<TrainSimState>,
     created: bool,
     disposed: bool,
+    /// Wall-clock deadline (UNIX millis, `u64::MAX` = disarmed) for the JS
+    /// currently running; the runtime's interrupt handler aborts evaluation
+    /// past it, so a user script with an infinite loop can no longer freeze
+    /// the UI thread forever (`run_script_test` runs synchronously).
+    deadline: Arc<AtomicU64>,
+}
+
+/// Current wall clock as UNIX milliseconds.
+fn now_unix_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Arms the sandbox deadline for the current JS invocation and clears it on
+/// drop, so unrelated code is never interrupted.
+struct DeadlineGuard(Arc<AtomicU64>);
+impl DeadlineGuard {
+    fn arm(&self, budget_ms: u64) {
+        self.0.store(now_unix_millis() + budget_ms, Ordering::Relaxed);
+    }
+}
+impl Drop for DeadlineGuard {
+    fn drop(&mut self) {
+        self.0.store(u64::MAX, Ordering::Relaxed);
+    }
 }
 
 impl JsSandbox {
@@ -137,11 +167,24 @@ impl JsSandbox {
         input: Option<&serde_json::Value>,
     ) -> Result<JsSandbox, ScriptError> {
         let rt = Runtime::new().map_err(|e| ScriptError::Js(e.to_string()))?;
+        let deadline: Arc<AtomicU64> = Arc::new(AtomicU64::new(u64::MAX));
+        {
+            // Abort JS evaluation after the armed budget: interrupts fires on
+            // loop back-edges and function entries, so `while(true){}` in a
+            // user script surfaces as a JS error instead of an app hang.
+            let dl = deadline.clone();
+            rt.set_interrupt_handler(Some(Box::new(move || {
+                let t = dl.load(Ordering::Relaxed);
+                t != u64::MAX && now_unix_millis() >= t
+            })));
+        }
         let ctx = Context::full(&rt).map_err(|e| ScriptError::Js(e.to_string()))?;
         let logs: Shared<Vec<String>> = Rc::new(RefCell::new(Vec::new()));
         let sim: Shared<TrainSimState> = Rc::new(RefCell::new(TrainSimState::default()));
         let source_map: Shared<Vec<(String, String)>> = Rc::new(RefCell::new(sources.to_vec()));
 
+        let guard = DeadlineGuard(deadline.clone());
+        guard.arm(2000);
         ctx.with(|ctx| -> Result<(), rquickjs::Error> {
             let globals = ctx.globals();
 
@@ -149,7 +192,14 @@ impl JsSandbox {
             // native __mrpc_log(String) sink.
             let logs_for_sink = logs.clone();
             let log_sink = Function::new(ctx.clone(), move |s: String| {
-                logs_for_sink.borrow_mut().push(s);
+                // try_borrow_mut: `__mrpc_stringify` can run user JS (a
+                // `toJSON` or getter that itself calls print), re-entering
+                // this closure while the Vec is already borrowed — a plain
+                // borrow_mut would panic with BorrowMutError and take the
+                // whole app down. The re-entrant line is simply dropped.
+                if let Ok(mut l) = logs_for_sink.try_borrow_mut() {
+                    l.push(s);
+                }
             })?;
             globals.set("__mrpc_log", log_sink)?;
             ctx.eval::<Value, _>(STRINGIFY_HELPER)?;
@@ -232,7 +282,7 @@ impl JsSandbox {
         })
         .map_err(|e| ScriptError::Js(e.to_string()))?;
 
-        Ok(JsSandbox { ctx, logs, sim, created: false, disposed: false })
+        Ok(JsSandbox { ctx, logs, sim, created: false, disposed: false, deadline })
     }
 
     /// Update the simulated train state (speed, doors, notch…).
@@ -337,6 +387,10 @@ impl JsSandbox {
     fn call_lifecycle(&mut self, name: &str) -> Result<(), ScriptError> {
         let logs = self.logs.clone();
         let sim = self.sim.borrow().clone();
+        // Generous per-call budget: normal render frames take microseconds;
+        // anything stuck past 500ms is an infinite loop.
+        let guard = DeadlineGuard(self.deadline.clone());
+        guard.arm(500);
         let result = self.ctx.with(|ctx| -> Result<(), rquickjs::Error> {
             let globals = ctx.globals();
             let callback: Option<Function> = globals.get(name).ok();

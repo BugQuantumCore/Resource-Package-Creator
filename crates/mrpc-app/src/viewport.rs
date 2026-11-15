@@ -376,6 +376,9 @@ struct GpuScene {
     line_buf: wgpu::Buffer,
     line_count: u32,
     instance_count: usize,
+    /// Rebuilt each frame in `prepare`: one (index offset, index count,
+    /// instance slot) triple per drawn instance, in depth-sorted order.
+    draw_plan: Vec<(u32, u32, u32)>,
     signature: (usize, usize, usize),
     tex_size: Option<(u32, u32)>,
 }
@@ -467,9 +470,17 @@ impl CallbackTrait for ViewportCallback {
                 });
 
                 let mut instance_data: Vec<InstanceData> = Vec::with_capacity(order.len());
+                // (index offset, index count, instance slot): each instance
+                // draws ONLY its own mesh. Drawing every mesh against every
+                // instance (the old N×N loop) painted each part's geometry at
+                // every other part's placement — ghost boxes all over the car.
+                let mut draw_plan: Vec<(u32, u32, u32)> = Vec::with_capacity(order.len());
                 for &i in &order {
                     let inst = &scene.instances[i];
                     let mesh = &scene.meshes[inst.mesh];
+                    let Some(&(offset, count)) = g.mesh_ranges.get(inst.mesh) else {
+                        continue;
+                    };
                     let model = Mat4::from_translation(Vec3::new(
                         (inst.x + inst.dx) as f32,
                         inst.y as f32,
@@ -483,6 +494,7 @@ impl CallbackTrait for ViewportCallback {
                     let flags = (mesh.emissive as u32)
                         | ((mesh.selected as u32) << 1)
                         | ((mesh.textured as u32) << 2);
+                    draw_plan.push((offset, count, instance_data.len() as u32));
                     instance_data.push(InstanceData {
                         model: model.to_cols_array_2d(),
                         tint,
@@ -501,6 +513,8 @@ impl CallbackTrait for ViewportCallback {
                     );
                 }
                 g.instance_count = written;
+                draw_plan.truncate(written);
+                g.draw_plan = draw_plan;
             }
         }
         Vec::new()
@@ -518,14 +532,16 @@ impl CallbackTrait for ViewportCallback {
         let grid = self.shared.scene.lock().map(|g| g.grid).unwrap_or(true);
         let gpu = self.shared.gpu.lock().unwrap();
         let Some(g) = gpu.as_ref() else { return };
-        if g.instance_count > 0 {
+        // Per-instance draws: one draw per (mesh geometry, instance slot)
+        // pair — never a mesh×all-instances cross product.
+        if !g.draw_plan.is_empty() {
             render_pass.set_pipeline(&g.mesh_pipeline);
             render_pass.set_bind_group(0, &g.bind_group, &[]);
             render_pass.set_vertex_buffer(0, g.vertex_buf.slice(..));
             render_pass.set_vertex_buffer(1, g.instance_buf.slice(..));
             render_pass.set_index_buffer(g.index_buf.slice(..), wgpu::IndexFormat::Uint32);
-            for (offset, count) in &g.mesh_ranges {
-                render_pass.draw_indexed(*offset..(*offset + *count), 0, 0..g.instance_count as u32);
+            for &(offset, count, slot) in &g.draw_plan {
+                render_pass.draw_indexed(offset..(offset + count), 0, slot..(slot + 1));
             }
         }
         if grid && g.line_count > 0 {
@@ -857,6 +873,7 @@ fn build_gpu_scene(
         line_buf,
         line_count,
         instance_count,
+        draw_plan: Vec::new(),
         signature,
         tex_size,
     }

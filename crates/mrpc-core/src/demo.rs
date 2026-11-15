@@ -29,6 +29,16 @@ pub fn create_demo_pack() -> ResourcePack {
     // ------------------------------------------------------------ properties
     let properties = ModelProperties {
         parts: vec![
+            // Static shell at the origin — without a part entry the OBJ's
+            // body/roof/window_band are simply never rendered (MTR parity:
+            // only referenced parts draw), which made the demo car appear
+            // as doors and a display floating in mid-air.
+            ModelPropertiesPart {
+                names: vec!["body".into(), "roof".into(), "window_band".into()],
+                // No positionDefinitions → one placement at the origin.
+                render_stage: RenderStage::Exterior,
+                ..Default::default()
+            },
             ModelPropertiesPart {
                 names: vec!["door".into()],
                 position_definitions: vec!["doorLeft".into(), "doorRight".into()],

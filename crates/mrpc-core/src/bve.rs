@@ -45,10 +45,14 @@ impl BveConfig {
                 let value = value.trim();
                 if in_sound_list {
                     if let Ok(idx) = key.parse::<usize>() {
-                        while cfg.sound_list.len() <= idx {
-                            cfg.sound_list.push(None);
+                        // Cap: a corrupt/hand-edited index (e.g. 2e9) used to
+                        // grow the Vec to billions of Nones on the UI thread.
+                        if idx <= 9_999 {
+                            while cfg.sound_list.len() <= idx {
+                                cfg.sound_list.push(None);
+                            }
+                            cfg.sound_list[idx] = Some(value.to_string());
                         }
-                        cfg.sound_list[idx] = Some(value.to_string());
                     }
                 } else if key == "motornoisedatatype" {
                     cfg.motor_noise_data_type = value.parse().unwrap_or(5);
@@ -220,6 +224,10 @@ impl BveMotorData4 {
                 ) else {
                     continue;
                 };
+                // Cap sound ids: `sound_count()` is max_id + 1 and the
+                // VVVF preview allocates one sample per id EVERY FRAME —
+                // a single bogus huge id froze the UI.
+                let id = id.clamp(-1, 9_999);
                 data.channels[idx].push((id, pitch / 100.0, volume / 128.0));
             }
         }
@@ -231,7 +239,10 @@ impl BveMotorData4 {
             .iter()
             .flat_map(|c| c.iter().map(|(id, _, _)| *id))
             .max()
-            .map(|m| (m + 1) as usize)
+            // Defensive clamp alongside the parse-time cap: `+ 1` on an
+            // i32::MAX id would overflow, and the caller allocates one
+            // sample per count each frame.
+            .map(|m| (m.clamp(0, 9_999) as usize) + 1)
             .unwrap_or(0)
     }
 

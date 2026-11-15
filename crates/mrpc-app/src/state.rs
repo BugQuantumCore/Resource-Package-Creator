@@ -40,26 +40,85 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
+    /// Directory holding the per-user config (and other app-written files).
+    /// `APPDATA` on Windows, `XDG_CONFIG_HOME`/`~/.config` on Linux,
+    /// `~/Library/Application Support` on macOS.
+    pub fn dir() -> PathBuf {
+        if let Some(ad) = std::env::var_os("APPDATA") {
+            return PathBuf::from(ad).join("mrpc");
+        }
+        if let Some(x) = std::env::var_os("XDG_CONFIG_HOME") {
+            return PathBuf::from(x).join("mrpc");
+        }
+        if let Some(h) = std::env::var_os("HOME") {
+            let p = PathBuf::from(h);
+            return match std::env::consts::OS {
+                "macos" => p.join("Library/Application Support/mrpc"),
+                _ => p.join(".config/mrpc"),
+            };
+        }
+        // No home at all: fall back beside the executable (portable use).
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+
     pub fn path() -> PathBuf {
-        let exe = std::env::current_exe().ok();
-        let dir = exe
-            .as_deref()
-            .and_then(|p| p.parent())
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| PathBuf::from("."));
-        dir.join("mrpc-config.json")
+        Self::dir().join("mrpc-config.json")
+    }
+
+    /// The pre-user-dir location (beside the exe) — read once for migration,
+    /// since installs under `C:\Program Files` can't write it.
+    fn legacy_path() -> PathBuf {
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("mrpc-config.json")
     }
 
     pub fn load() -> AppConfig {
         std::fs::read(Self::path())
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
+            // Migrate from the old beside-the-exe location.
+            .or_else(|| {
+                std::fs::read(Self::legacy_path())
+                    .ok()
+                    .and_then(|b| serde_json::from_slice(&b).ok())
+            })
             .unwrap_or_default()
     }
 
     pub fn save(&self) {
+        let _ = std::fs::create_dir_all(Self::dir());
         let _ = std::fs::write(Self::path(), serde_json::to_vec_pretty(self).unwrap_or_default());
     }
+}
+
+/// Default directory for exported files (VVVF audition WAV, pack zip).
+/// Writing to the process CWD breaks on installed builds: launched from a
+/// `Program Files` shortcut the CWD isn't writable. `Documents` on
+/// Windows/macOS, the home directory on Linux, temp as last resort.
+pub fn default_output_dir() -> PathBuf {
+    let docs = |home: std::ffi::OsString| {
+        let p = PathBuf::from(home);
+        match std::env::consts::OS {
+            "linux" => p,
+            _ => {
+                let d = p.join("Documents");
+                if d.is_dir() { d } else { p }
+            }
+        }
+    };
+    if let Some(d) = std::env::var_os("USERPROFILE") {
+        return docs(d);
+    }
+    if let Some(h) = std::env::var_os("HOME") {
+        return docs(h);
+    }
+    std::env::temp_dir()
 }
 
 /// Door animation preview player.
@@ -303,11 +362,34 @@ impl EditorState {
         };
         let lower = model_resource.to_ascii_lowercase();
 
-        // (model, materials carried over from the importer — only MQO has any).
+        // (model, materials carried over from the importer — MQO has its
+        // own; Blockbench names materials after internal texture names,
+        // which MTR binds to the model entry's `textureResource`).
         let (obj, imported_materials): (ObjModel, HashMap<String, Material>) =
             if lower.ends_with(".bbmodel") {
             match mrpc_core::bbmodel::parse_bbmodel(&String::from_utf8_lossy(obj_bytes)) {
-                Ok(m) => (m, HashMap::new()),
+                Ok(m) => {
+                    // Without this map every bbmodel part rendered flat
+                    // gray: `build_scene` only marks a submesh `textured`
+                    // when its material has a `map_kd`, and the bbmodel
+                    // parser names submeshes after Blockbench texture names
+                    // that never appear in any `.mtl`.
+                    let mut mats = HashMap::new();
+                    for part in &m.parts {
+                        for sub in &part.meshes {
+                            if !sub.material.is_empty() {
+                                mats.insert(
+                                    sub.material.clone(),
+                                    Material {
+                                        map_kd: Some(model.texture_resource.clone()),
+                                        ..Default::default()
+                                    },
+                                );
+                            }
+                        }
+                    }
+                    (m, mats)
+                }
                 Err(e) => {
                     self.status = format!("{}: {e}", t(self.locale, "error.parse"));
                     return;

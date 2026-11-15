@@ -528,7 +528,10 @@ fn legacy_sounds(app: &mut MrpcApp, ui: &mut egui::Ui, locale: Locale) {
         ui.weak(t(locale, "outliner.no_vehicles"));
         return;
     };
-    let vehicle = app.state.pack.resources.vehicles[vi].clone();
+    let Some(vehicle) = app.state.pack.resources.vehicles.get(vi).cloned() else {
+        ui.weak(t(locale, "outliner.no_vehicles"));
+        return;
+    };
     if vehicle.legacy_speed_sound_base_resource.is_empty() && vehicle.legacy_door_sound_base_resource.is_empty() {
         ui.weak(t(locale, "vvvf.no_bve_data"));
         return;
@@ -768,10 +771,24 @@ fn export_tab(app: &mut MrpcApp, ui: &mut egui::Ui, locale: Locale) {
             .config
             .last_export
             .clone()
-            .unwrap_or_else(|| "my-pack.zip".into());
+            .filter(|p| !p.is_empty())
+            .unwrap_or_else(|| {
+                // User-writable default — NOT the CWD (unwritable when the
+                // app is launched from a Program Files shortcut).
+                crate::state::default_output_dir()
+                    .join("my-pack.zip")
+                    .to_string_lossy()
+                    .into_owned()
+            });
         ui.add(egui::TextEdit::singleline(&mut path).desired_width(f32::INFINITY));
         app.state.config.last_export = Some(path.clone());
         if ui.button(t(locale, "export.export")).clicked() {
+            // Flush pending in-panel edits first: part fields and script code
+            // write into the in-memory `state.model`/`state.script` every
+            // frame but are only persisted to the pack on "Apply" — exporting
+            // without this silently wrote the stale JSON.
+            app.save_properties_back();
+            app.save_script_back();
             match app.state.pack.export_zip(std::path::Path::new(&path)) {
                 Ok(()) => {
                     app.state.export_message =

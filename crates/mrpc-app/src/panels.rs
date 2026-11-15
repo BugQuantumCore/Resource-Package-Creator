@@ -155,6 +155,11 @@ pub fn outliner(app: &mut MrpcApp, ui: &mut egui::Ui) {
                     app.state.selection = Selection::Asset((*path).to_string());
                 }
             }
+            // The list is capped to keep the outliner responsive — say so,
+            // instead of silently hiding the tail.
+            if files.len() > 300 {
+                ui.weak(format!("+{} …", files.len() - 300));
+            }
         });
 }
 
@@ -211,7 +216,7 @@ pub fn properties(app: &mut MrpcApp, ui: &mut egui::Ui) {
         Selection::Asset(path) => {
             ui.strong(&path);
             ui.separator();
-            if let Some(bytes) = app.state.pack.files.get(&path).cloned() {
+            if let Some(bytes) = app.state.pack.files.get(&path) {
                 ui.label(format!("{} bytes", bytes.len()));
                 let lower = path.to_ascii_lowercase();
                 if lower.ends_with(".json") || lower.ends_with(".cfg") || lower.ends_with(".csv")
@@ -220,7 +225,7 @@ pub fn properties(app: &mut MrpcApp, ui: &mut egui::Ui) {
                 {
                     ui.separator();
                     ui.collapsing("preview", |ui| {
-                        let text = String::from_utf8_lossy(&bytes);
+                        let text = String::from_utf8_lossy(bytes);
                         egui::ScrollArea::vertical()
                             .id_salt("asset_preview")
                             .max_height(400.0)
@@ -229,7 +234,7 @@ pub fn properties(app: &mut MrpcApp, ui: &mut egui::Ui) {
                             });
                     });
                 } else if lower.ends_with(".png") {
-                    show_texture_preview(ui, &bytes);
+                    show_texture_preview(app, ui, &path);
                 }
             } else {
                 ui.weak("missing");
@@ -238,18 +243,48 @@ pub fn properties(app: &mut MrpcApp, ui: &mut egui::Ui) {
     }
 }
 
-fn show_texture_preview(ui: &mut egui::Ui, bytes: &[u8]) {
-    if let Ok(img) = image::load_from_memory(bytes) {
-        let size = [img.width() as usize, img.height() as usize];
-        let rgba = img.to_rgba8();
-        let pixels = rgba.into_raw();
-        let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
-        let tex = ui
-            .ctx()
-            .load_texture("asset_preview", color_image, egui::TextureOptions::default());
-        ui.image((tex.id(), egui::vec2(256.0, 256.0)));
-    } else {
-        ui.weak("invalid image");
+fn show_texture_preview(app: &mut MrpcApp, ui: &mut egui::Ui, path: &str) {
+    // Decode + GPU-upload only when the selection changes. The old code
+    // re-decoded and re-allocated a texture EVERY frame (egui 0.37
+    // `load_texture` never caches), which stalled the UI while a pack atlas
+    // (2048²–4096²) was selected; it also cloned the whole file per frame.
+    if !matches!(&app.asset_preview, Some((p, _)) if p.as_str() == path) {
+        let decoded = app
+            .state
+            .pack
+            .files
+            .get(path)
+            .and_then(|b| image::load_from_memory(b).ok())
+            .map(|img| {
+                // Clamp huge images so egui's texture-size debug assert and
+                // small `max_texture_side` GPUs don't blow up.
+                let img = if img.width().max(img.height()) > 4096 {
+                    img.thumbnail(4096, 4096)
+                } else {
+                    img
+                };
+                let size = [img.width() as usize, img.height() as usize];
+                let pixels = img.to_rgba8().into_raw();
+                egui::ColorImage::from_rgba_unmultiplied(size, &pixels)
+            });
+        let handle = decoded.map(|ci| {
+            ui.ctx()
+                .load_texture("asset_preview", ci, egui::TextureOptions::default())
+        });
+        app.asset_preview = Some((path.to_string(), handle));
+    }
+    match &app.asset_preview {
+        Some((_, Some(tex))) => {
+            // Aspect-preserving fit inside a 256×256 box (no upscaling of
+            // tiny textures either).
+            let sz = tex.size_vec2();
+            let m = sz.x.max(sz.y).max(1.0);
+            let shown = sz / m * 256.0;
+            ui.image((tex.id(), shown));
+        }
+        _ => {
+            ui.weak("invalid image");
+        }
     }
 }
 

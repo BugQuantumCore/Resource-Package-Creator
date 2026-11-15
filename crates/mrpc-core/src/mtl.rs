@@ -39,7 +39,9 @@ pub fn parse_mtl(text: &str) -> HashMap<String, Material> {
                 if let Some((name, mat)) = current.take() {
                     out.insert(name, mat);
                 }
-                let name = line[7..].trim().trim_matches('"').to_string();
+                // `get`, not indexing: a bare `newmtl` (truncated/hand-edited
+                // file) is 6 bytes and `[7..]` would panic on pack load.
+                let name = line.get(7..).unwrap_or_default().trim().trim_matches('"').to_string();
                 current = Some((name, Material::default()));
             }
             "kd" | "map_kd" => {
