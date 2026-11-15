@@ -67,6 +67,51 @@ struct PreviewedPack {
     path: PathBuf,
     is_zip: bool,
     pack: mrpc_core::pack::ResourcePack,
+    /// One-shot display data for the preview window (see [`PreviewDisplay`]).
+    display: PreviewDisplay,
+}
+
+/// Locale-independent data shown by the preview window, computed **once**
+/// when the pack is loaded instead of per frame — egui repaints at UI rate,
+/// and re-cloning the vehicle list / script ids and re-summing every file's
+/// size on each frame stutters with large packs (hundreds of vehicles,
+/// thousands of files).
+struct PreviewDisplay {
+    /// `id` or `id — name` per vehicle.
+    vehicle_rows: Vec<String>,
+    script_ids: Vec<String>,
+    /// Sum of every file's byte length.
+    total_bytes: u64,
+    /// Whether the pack holds anything at all (enables the 添加 button).
+    has_content: bool,
+}
+
+fn preview_display(pack: &mrpc_core::pack::ResourcePack) -> PreviewDisplay {
+    let r = &pack.resources;
+    PreviewDisplay {
+        vehicle_rows: r
+            .vehicles
+            .iter()
+            .map(|v| {
+                if v.name.is_empty() {
+                    v.id.clone()
+                } else {
+                    format!("{} — {}", v.id, v.name)
+                }
+            })
+            .collect(),
+        script_ids: r.vehicle_scripts.iter().map(|s| s.id.clone()).collect(),
+        total_bytes: pack.files.values().map(|b| b.len() as u64).sum(),
+        has_content: !(r.vehicles.is_empty()
+            && r.vehicle_scripts.is_empty()
+            && r.signs.is_empty()
+            && r.rails.is_empty()
+            && r.objects.is_empty()
+            && r.lifts.is_empty()
+            && r.extra.is_empty()
+            && r.legacy.is_empty()
+            && pack.files.is_empty()),
+    }
 }
 
 /// What the preview-add window asked the app to do after a frame.
@@ -747,8 +792,11 @@ impl MrpcApp {
                 // starts in the same place.
                 self.state.config.last_open = Some(path.display().to_string());
                 self.state.config.save();
+                // Compute the preview window's display data once, here — not
+                // on every repaint.
+                let display = preview_display(&pack);
                 let stage = PreviewAddStage::Preview {
-                    source: Box::new(PreviewedPack { path, is_zip, pack }),
+                    source: Box::new(PreviewedPack { path, is_zip, pack, display }),
                 };
                 if let Some(flow) = self.preview_add.as_mut() {
                     flow.stage = stage;
@@ -782,13 +830,18 @@ impl MrpcApp {
             stats.files_kept,
             stats.ids_renamed
         );
-        self.state.dirty = true;
-        if stats.vehicles_added > 0 {
-            // Select the first vehicle that came in with the merge.
-            self.state.selection = Selection::Vehicle(first_new_vehicle);
+        // A merge that added nothing (e.g. adding the same pack twice) must
+        // not mark the pack dirty or needlessly rebuild the model and
+        // re-run validation on unchanged data.
+        if stats.added_anything() {
+            self.state.dirty = true;
+            if stats.vehicles_added > 0 {
+                // Select the first vehicle that came in with the merge.
+                self.state.selection = Selection::Vehicle(first_new_vehicle);
+            }
+            self.reload_model();
+            self.state.revalidate();
         }
-        self.reload_model();
-        self.state.revalidate();
 
         let mut message = if stats.added_anything() {
             tf(
@@ -1112,9 +1165,12 @@ impl MrpcApp {
                     });
             }
             PreviewAddStage::Preview { source } => {
-                // Pre-compute the display data so the window closure only
-                // needs shared borrows.
+                // The heavy display data (vehicle rows, script ids, total
+                // size) was computed once when the pack was loaded — see
+                // `preview_display`; only cheap locale-dependent labels are
+                // built per frame.
                 let pack = &source.pack;
+                let display = &source.display;
                 let path_text = source.path.display().to_string();
                 let kind = t(
                     locale,
@@ -1131,36 +1187,18 @@ impl MrpcApp {
                         ("g", &pack.resources.signs.len().to_string()),
                     ],
                 );
-                let total_bytes: u64 = pack.files.values().map(|b| b.len() as u64).sum();
                 let files_line = tf(
                     locale,
                     "preview.files",
-                    &[("f", &pack.files.len().to_string()), ("size", &format_size(total_bytes))],
+                    &[
+                        ("f", &pack.files.len().to_string()),
+                        ("size", &format_size(display.total_bytes)),
+                    ],
                 );
-                let vehicle_rows: Vec<String> = pack
-                    .resources
-                    .vehicles
-                    .iter()
-                    .map(|v| {
-                        if v.name.is_empty() {
-                            v.id.clone()
-                        } else {
-                            format!("{} — {}", v.id, v.name)
-                        }
-                    })
-                    .collect();
-                let script_ids: Vec<String> =
-                    pack.resources.vehicle_scripts.iter().map(|s| s.id.clone()).collect();
-                let load_errors = pack.load_errors.clone();
-                let has_content = !vehicle_rows.is_empty()
-                    || !script_ids.is_empty()
-                    || !pack.resources.signs.is_empty()
-                    || !pack.resources.rails.is_empty()
-                    || !pack.resources.objects.is_empty()
-                    || !pack.resources.lifts.is_empty()
-                    || !pack.resources.extra.is_empty()
-                    || !pack.resources.legacy.is_empty()
-                    || !pack.files.is_empty();
+                let vehicle_rows = display.vehicle_rows.as_slice();
+                let script_ids = display.script_ids.as_slice();
+                let load_errors = pack.load_errors.as_slice();
+                let has_content = display.has_content;
 
                 egui::Window::new(t(locale, "preview.title"))
                     .collapsible(false)
@@ -1185,7 +1223,7 @@ impl MrpcApp {
                             egui::ScrollArea::vertical()
                                 .max_height(150.0)
                                 .show(ui, |ui| {
-                                    for row in &vehicle_rows {
+                                    for row in vehicle_rows {
                                         ui.label(row);
                                     }
                                 });
@@ -1211,7 +1249,7 @@ impl MrpcApp {
                         if !load_errors.is_empty() {
                             ui.add_space(4.0);
                             ui.label(RichText::new(t(locale, "preview.load_notes")).strong());
-                            for err in &load_errors {
+                            for err in load_errors {
                                 ui.label(
                                     RichText::new(err.as_str())
                                         .small()

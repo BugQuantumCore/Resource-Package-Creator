@@ -9,7 +9,7 @@
 //! assets/mtr/<custom paths…>     (models, textures, properties, sounds, scripts)
 //! ```
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::io::{Read, Write};
 use std::path::Path;
 
@@ -143,15 +143,24 @@ impl ResourcePack {
         }
 
         // ---- vehicle scripts (rename on collision, remember the mapping) ----
+        // Existing scripts are serialised once up front so that recognising
+        // an identical incoming script costs a single serialisation + hash
+        // lookup, instead of re-serialising every existing script for every
+        // incoming one (O(n×m) → O(n+m); serde_json's Map is a BTreeMap, so
+        // `to_string` is a deterministic, faithful key for Value equality).
+        let mut known_scripts: HashSet<String> = self
+            .resources
+            .vehicle_scripts
+            .iter()
+            .filter_map(|s| serde_json::to_string(s).ok())
+            .collect();
         let mut script_renames: Vec<(String, String)> = Vec::new();
         for mut script in std::mem::take(&mut resources.vehicle_scripts) {
-            let equal_existing = self
-                .resources
-                .vehicle_scripts
-                .iter()
-                .any(|s| serde_json::to_value(s).ok() == serde_json::to_value(&script).ok());
-            if equal_existing {
-                continue; // already present, identical — reuse it
+            if let Some(serialized) = serde_json::to_string(&script).ok() {
+                if known_scripts.contains(serialized.as_str()) {
+                    continue; // already present, identical — reuse it
+                }
+                known_scripts.insert(serialized);
             }
             if self.resources.vehicle_script(&script.id).is_some() {
                 let old = script.id.clone();
@@ -165,15 +174,20 @@ impl ResourcePack {
         }
 
         // ---- vehicles (rename on collision; re-link renamed scripts) ----
+        // Same one-serialisation-per-entry dedup as for scripts above.
+        let mut known_vehicles: HashSet<String> = self
+            .resources
+            .vehicles
+            .iter()
+            .filter_map(|v| serde_json::to_string(v).ok())
+            .collect();
         let first_new_vehicle = self.resources.vehicles.len();
         for mut vehicle in std::mem::take(&mut resources.vehicles) {
-            let equal_existing = self
-                .resources
-                .vehicles
-                .iter()
-                .any(|v| serde_json::to_value(v).ok() == serde_json::to_value(&vehicle).ok());
-            if equal_existing {
-                continue;
+            if let Some(serialized) = serde_json::to_string(&vehicle).ok() {
+                if known_vehicles.contains(serialized.as_str()) {
+                    continue;
+                }
+                known_vehicles.insert(serialized);
             }
             if self.resources.vehicle(&vehicle.id).is_some() {
                 vehicle.id = unique_id(&vehicle.id, &|id| self.resources.vehicle(id).is_some());
@@ -195,14 +209,18 @@ impl ResourcePack {
         }
 
         // ---- signs ----
+        let mut known_signs: HashSet<String> = self
+            .resources
+            .signs
+            .iter()
+            .filter_map(|s| serde_json::to_string(s).ok())
+            .collect();
         for mut sign in std::mem::take(&mut resources.signs) {
-            let equal_existing = self
-                .resources
-                .signs
-                .iter()
-                .any(|s| serde_json::to_value(s).ok() == serde_json::to_value(&sign).ok());
-            if equal_existing {
-                continue;
+            if let Some(serialized) = serde_json::to_string(&sign).ok() {
+                if known_signs.contains(serialized.as_str()) {
+                    continue;
+                }
+                known_signs.insert(serialized);
             }
             if self.resources.signs.iter().any(|s| s.id == sign.id) {
                 sign.id =
@@ -413,14 +431,34 @@ fn collect_files(root: &Path, dir: &Path, out: &mut BTreeMap<String, Vec<u8>>) -
 
 /// Append `incoming` pass-through values to `target`, skipping values that are
 /// already present (identity by serialised equality).
-fn append_dedup(target: &mut Vec<serde_json::Value>, incoming: Vec<serde_json::Value>, added: &mut usize) {
+///
+/// The existing entries are serialised once up front, so deduplicating a
+/// large incoming section costs O(n + m) serialisations instead of the
+/// O(n × m) of re-serialising every existing entry for every incoming one
+/// (rails / objects / lifts sections routinely hold thousands of entries).
+fn append_dedup(
+    target: &mut Vec<serde_json::Value>,
+    incoming: Vec<serde_json::Value>,
+    added: &mut usize,
+) {
+    let mut known: HashSet<String> = target
+        .iter()
+        .filter_map(|v| serde_json::to_string(v).ok())
+        .collect();
     for value in incoming {
-        let known = target
-            .iter()
-            .any(|v| serde_json::to_value(v).ok() == Some(value.clone()));
-        if !known {
-            target.push(value);
-            *added += 1;
+        match serde_json::to_string(&value).ok() {
+            Some(serialized) => {
+                if known.insert(serialized) {
+                    target.push(value);
+                    *added += 1;
+                }
+            }
+            // A Value that fails to serialise (impossible for values parsed
+            // from JSON) is simply appended, matching the old comparison.
+            None => {
+                target.push(value);
+                *added += 1;
+            }
         }
     }
 }

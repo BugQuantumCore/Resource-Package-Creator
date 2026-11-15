@@ -1,4 +1,7 @@
 /target
+# Local demo artifacts written by `cargo run -p mrpc-core --example gen_demo`
+# (CI regenerates them; keep the 10+ MB demo zip / wav out of the repo).
+/out
 Cargo.lock.orig
 *.log
 .DS_Store
