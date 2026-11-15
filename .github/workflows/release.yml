@@ -131,6 +131,15 @@ jobs:
           path: artifacts
       - name: List artifacts
         run: find artifacts -type f | sort
+      - name: Dedupe cross-platform demo artifacts
+        run: |
+          # Every platform's portable zip embeds its own mrpc-demo-pack.zip,
+          # so the download-artifact glob sees three files with the SAME name.
+          # Uploading duplicate asset names concurrently races inside
+          # softprops/action-gh-release (404 "update-a-release-asset"), which
+          # left the v0.2.3 release stuck as a draft. Keep exactly one.
+          ls artifacts/*/mrpc-demo-pack.zip 2>/dev/null | sort | tail -n +2 | xargs -r rm -v
+          find artifacts -type f | sort
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
