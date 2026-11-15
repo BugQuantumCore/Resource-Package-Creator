@@ -12,7 +12,13 @@ struct BbModel {
     #[serde(default)]
     #[allow(dead_code)]
     name: String,
-    elements: Vec<BbElement>,
+    /// Elements are parsed one-by-one (as raw JSON) so that a single
+    /// unsupported element — e.g. a Blockbench `mesh` (which has no `from`/
+    /// `to` box and differently-shaped `faces`) — is skipped instead of
+    /// failing the WHOLE model file. MTR renders cube elements; meshes are
+    /// not supported there either.
+    #[serde(default)]
+    elements: Vec<serde_json::Value>,
     #[serde(default)]
     textures: Vec<BbTexture>,
 }
@@ -21,12 +27,15 @@ struct BbModel {
 struct BbElement {
     #[serde(default)]
     name: String,
+    #[serde(default)]
     from: [f64; 3],
+    #[serde(default)]
     to: [f64; 3],
     #[serde(default)]
     origin: Option<[f64; 3]>,
     #[serde(default)]
     rotation: Option<[f64; 3]>,
+    #[serde(default)]
     faces: HashMap<String, BbFace>,
 }
 
@@ -72,7 +81,12 @@ pub fn parse_bbmodel(text: &str) -> Result<ObjModel, String> {
         .collect();
 
     let mut parts: Vec<ObjPart> = Vec::new();
-    for element in &model.elements {
+    for element_value in &model.elements {
+        // Tolerant per-element parse: cube elements keep working even when
+        // the file also contains meshes or other unknown element shapes.
+        let Some(element) = serde_json::from_value::<BbElement>(element_value.clone()).ok() else {
+            continue;
+        };
         let mut vertices: Vec<Vertex> = Vec::new();
         let mut indices: Vec<u32> = Vec::new();
 

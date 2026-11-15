@@ -49,15 +49,27 @@ impl Camera {
         self.pitch = (self.pitch + dy * 0.008).clamp(-1.45, 1.45);
     }
 
+    /// `dy` is the egui scroll delta: wheel UP (away from the user) is
+    /// POSITIVE, and wheel-up universally means zoom IN (dist smaller).
     pub fn zoom(&mut self, dy: f32) {
-        self.dist = (self.dist * (1.0 + dy * 0.001)).clamp(2.0, 200.0);
+        self.dist = (self.dist * (1.0 - dy * 0.001)).clamp(2.0, 200.0);
     }
 
+    /// Right-button drag pan. `dx`/`dy` are egui drag deltas (x right, y DOWN).
+    ///
+    /// Direction convention ("grab the scene", like Blender's Shift+MMB pan
+    /// and every map viewer): the scene follows the mouse. The camera target
+    /// therefore moves OPPOSITE to the drag, in screen space:
+    /// `right` below is the camera's LEFT in screen space (screen-right is
+    /// `(sin yaw, 0, -cos yaw)`), so `target += right * dx` moves the look
+    /// target toward screen-LEFT for a rightward drag → the scene appears to
+    /// move right, with the mouse. Vertically: drag down → target moves up →
+    /// the scene appears to move down, with the mouse.
     pub fn pan(&mut self, dx: f32, dy: f32) {
         let (_sy, cy) = self.yaw.sin_cos();
         let right = Vec3::new(-(self.yaw.sin()), 0.0, cy);
         let scale = self.dist * 0.0016;
-        self.target += right * (-dx * scale) + Vec3::Y * (dy * scale);
+        self.target += right * (dx * scale) + Vec3::Y * (dy * scale);
     }
 }
 
@@ -353,6 +365,10 @@ struct GpuScene {
     line_pipeline: wgpu::RenderPipeline,
     uniform_buf: wgpu::Buffer,
     instance_buf: wgpu::Buffer,
+    /// How many `InstanceData` slots `instance_buf` holds; the per-frame
+    /// instance write is clamped to it (the buffer is rebuilt whenever the
+    /// scene signature changes, so the counts track each other).
+    instance_capacity: usize,
     bind_group: wgpu::BindGroup,
     vertex_buf: wgpu::Buffer,
     index_buf: wgpu::Buffer,
@@ -474,10 +490,17 @@ impl CallbackTrait for ViewportCallback {
                         _pad: [0; 3],
                     });
                 }
-                if !instance_data.is_empty() {
-                    queue.write_buffer(&g.instance_buf, 0, bytemuck::cast_slice(&instance_data));
+                // Clamp to the buffer capacity — writing a larger slice is a
+                // wgpu validation error that would destroy the viewport pass.
+                let written = instance_data.len().min(g.instance_capacity);
+                if written > 0 {
+                    queue.write_buffer(
+                        &g.instance_buf,
+                        0,
+                        bytemuck::cast_slice(&instance_data[..written]),
+                    );
                 }
-                g.instance_count = instance_data.len();
+                g.instance_count = written;
             }
         }
         Vec::new()
@@ -691,7 +714,10 @@ fn build_gpu_scene(
         usage: wgpu::BufferUsages::INDEX,
     });
 
-    let instance_capacity = 8192;
+    // Sized for THIS scene (large real packs exceed the old fixed 8192
+    // slots, and `write_buffer` with a larger slice is a wgpu validation
+    // error that kills the whole viewport).
+    let instance_capacity = scene.instances.len().max(1024);
     let instance_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("mrpc.instances"),
         size: (instance_capacity * std::mem::size_of::<InstanceData>()) as u64,
@@ -823,6 +849,7 @@ fn build_gpu_scene(
         line_pipeline,
         uniform_buf,
         instance_buf,
+        instance_capacity,
         bind_group,
         vertex_buf,
         index_buf,

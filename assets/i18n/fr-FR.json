@@ -329,5 +329,8 @@
   "vvvf.bve_no_source": "Aucune boucle WAV de moteur dans ce jeu sonore — saisissez un chemin WAV ci-dessous.",
   "vvvf.bve_load": "Charger le WAV du moteur",
   "vvvf.bve_loaded": "{n} canal/canaux chargé(s)",
-  "vvvf.bve_hint": "La boucle WAV est lue au rythme de la table de fréquences et au volume de la table des volumes (sémantique du bruit moteur BVE)."
+  "vvvf.bve_hint": "La boucle WAV est lue au rythme de la table de fréquences et au volume de la table des volumes (sémantique du bruit moteur BVE).",
+  "panel.collapse": "Replier le panneau inférieur (rouvrir via la barre d’état ou le menu Affichage)",
+  "panel.reopen": "Rouvrir le panneau inférieur",
+  "view.bottom_panel": "Afficher le panneau d’outils inférieur"
 }

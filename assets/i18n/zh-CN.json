@@ -329,5 +329,8 @@
   "vvvf.bve_no_source": "该音源集未包含电机 WAV 循环——请在下方填写 WAV 路径。",
   "vvvf.bve_load": "加载电机 WAV",
   "vvvf.bve_loaded": "已加载 {n} 个声道",
-  "vvvf.bve_hint": "循环 WAV 按频率表速率、音量表音量回放（BVE 电机噪声语义）。"
+  "vvvf.bve_hint": "循环 WAV 按频率表速率、音量表音量回放（BVE 电机噪声语义）。",
+  "panel.collapse": "收起底部面板（可从状态栏或视图菜单重新打开）",
+  "panel.reopen": "重新打开底部面板",
+  "view.bottom_panel": "显示底部工具面板"
 }

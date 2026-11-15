@@ -329,5 +329,8 @@
   "vvvf.bve_no_source": "此音源集未包含馬達 WAV 循環——請在下方填寫 WAV 路徑。",
   "vvvf.bve_load": "載入馬達 WAV",
   "vvvf.bve_loaded": "已載入 {n} 個聲道",
-  "vvvf.bve_hint": "循環 WAV 按頻率表速率、音量表音量播放（BVE 馬達噪音語義）。"
+  "vvvf.bve_hint": "循環 WAV 按頻率表速率、音量表音量播放（BVE 馬達噪音語義）。",
+  "panel.collapse": "收起底部面板（可從狀態列或檢視選單重新開啟）",
+  "panel.reopen": "重新開啟底部面板",
+  "view.bottom_panel": "顯示底部工具面板"
 }

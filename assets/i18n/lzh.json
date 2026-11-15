@@ -329,5 +329,8 @@
   "vvvf.bve_no_source": "此音源無馬達 WAV 之環——請於下書 WAV 之徑。",
   "vvvf.bve_load": "載馬達 WAV",
   "vvvf.bve_loaded": "已載聲道 {n}",
-  "vvvf.bve_hint": "環音循頻率之表而變其速，循音量之表而變其聲（BVE 馬達之義也）。"
+  "vvvf.bve_hint": "環音循頻率之表而變其速，循音量之表而變其聲（BVE 馬達之義也）。",
+  "panel.collapse": "斂其下面板（可自下方一列復啟之）",
+  "panel.reopen": "復啟下面之板",
+  "view.bottom_panel": "見下方之具板"
 }

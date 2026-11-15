@@ -19,15 +19,37 @@ pub enum BottomTab {
 pub fn bottom_tabs(app: &mut MrpcApp, ui: &mut egui::Ui) {
     let locale = app.state.locale;
     let tab = app.bottom_tab;
+    // Capped so the panel can never eat most of the window (the script tab's
+    // tall content used to push it there), and collapsible so it can be
+    // dismissed at all: `show_collapsible` adds drag-to-collapse, a collapse
+    // toggle on double-click of the resize edge, and a grab handle to reopen.
+    let max_panel = (ui.available_height() * 0.6).max(200.0);
+    // `show_collapsible` needs `&mut bool` for the whole call while the panel
+    // body borrows `app` — so the flag is copied out and written back, and
+    // the ▾ button records its request in a local instead of writing the
+    // field directly (the write-back below must not clobber it).
+    let mut panel_open = app.bottom_panel_open;
+    let mut collapse_requested = false;
     egui::Panel::bottom("bottom_tabs")
         .resizable(true)
-        .default_size(280.0)
-        .show(ui, |ui| {
+        .default_size(260.0)
+        .min_size(110.0)
+        .max_size(max_panel)
+        .show_collapsible(ui, &mut panel_open, |ui| {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut app.bottom_tab, BottomTab::Anim, t(locale, "anim.title"));
                 ui.selectable_value(&mut app.bottom_tab, BottomTab::Vvvf, t(locale, "vvvf.title"));
                 ui.selectable_value(&mut app.bottom_tab, BottomTab::Script, t(locale, "script.title"));
                 ui.selectable_value(&mut app.bottom_tab, BottomTab::Export, t(locale, "export.title"));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .small_button("▾")
+                        .on_hover_text(t(locale, "panel.collapse"))
+                        .clicked()
+                    {
+                        collapse_requested = true;
+                    }
+                });
             });
             ui.separator();
             match tab {
@@ -37,6 +59,7 @@ pub fn bottom_tabs(app: &mut MrpcApp, ui: &mut egui::Ui) {
                 BottomTab::Export => export_tab(app, ui, locale),
             }
         });
+    app.bottom_panel_open = if collapse_requested { false } else { panel_open };
 }
 
 // ---------------------------------------------------------------------------
@@ -612,6 +635,19 @@ fn draw_spectrum(ui: &mut egui::Ui, rect: egui::Rect, bars: &[(f64, f32)], title
 // ---------------------------------------------------------------------------
 
 fn script_tab(app: &mut MrpcApp, ui: &mut egui::Ui, locale: Locale) {
+    // The whole tab scrolls vertically, so a short (or collapsed-small) panel
+    // shows a scrollbar instead of cutting the console/native rows off-screen
+    // — that clipping is what made the editor window show “only a part” of
+    // itself and made its bottom controls unreachable.
+    egui::ScrollArea::vertical()
+        .id_salt("script_tab")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            script_tab_inner(app, ui, locale);
+        });
+}
+
+fn script_tab_inner(app: &mut MrpcApp, ui: &mut egui::Ui, locale: Locale) {
     ui.horizontal(|ui| {
         if ui.button(t(locale, "script.template_js")).clicked() {
             app.new_script_entry(true);
@@ -635,15 +671,18 @@ fn script_tab(app: &mut MrpcApp, ui: &mut egui::Ui, locale: Locale) {
             ui.add(
                 egui::TextEdit::multiline(&mut app.state.script.code)
                     .code_editor()
-                    .desired_rows(12)
-                    .desired_width(remaining.x * 0.55),
+                    .desired_rows(10)
+                    .desired_width((remaining.x * 0.55).max(220.0)),
             );
         });
         ui.vertical(|ui| {
             ui.strong(t(locale, "script.api_reference"));
+            // Bounded: `remaining.y - 40` could go NEGATIVE on a small panel,
+            // which egui then treats as unbounded — the API list demanded
+            // ~1200pt and dragged the panel across most of the screen.
             egui::ScrollArea::vertical()
                 .id_salt("api_ref")
-                .max_height(remaining.y - 40.0)
+                .max_height((remaining.y - 40.0).clamp(80.0, 220.0))
                 .show(ui, |ui| {
                     for (name, sig) in VEHICLE_API {
                         ui.monospace(RichText::new(*sig).small().color(egui::Color32::from_rgb(150, 200, 255)))

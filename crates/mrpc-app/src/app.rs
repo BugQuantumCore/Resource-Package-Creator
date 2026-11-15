@@ -17,10 +17,21 @@ pub struct MrpcApp {
     pub state: EditorState,
     pub viewport: Arc<ViewportShared>,
     pub bottom_tab: BottomTab,
+    /// Whether the bottom tab panel (door animation / VVVF / script /
+    /// export) is shown — collapsible via the ▾ button in the tab strip, the
+    /// View menu, dragging the panel edge past its minimum, or reopened from
+    /// the status bar. Previously the panel had NO close affordance at all
+    /// while its content tower was clipped, which made the script editor
+    /// impossible to dismiss.
+    pub(crate) bottom_panel_open: bool,
     /// Scene version — bumped whenever the model or properties change.
     scene_version: u64,
     viewport_version: u64,
     last_texture_size: Option<(u32, u32)>,
+    /// Last (scene version, door state, selection, grid) the CPU scene was
+    /// built for: `build_scene` clones every vertex, so it must not run per
+    /// frame while nothing changed (real packs hold thousands of vertices).
+    last_scene_key: Option<(u64, u64, bool, Selection, bool)>,
     /// File → 预览添加 flow state: pick a .zip or folder with the system
     /// file dialog, preview the pack, then add it to the current pack.
     preview_add: Option<PreviewAdd>,
@@ -146,9 +157,11 @@ impl MrpcApp {
             state: EditorState::new(locale, config),
             viewport: ViewportShared::new(target_format),
             bottom_tab: BottomTab::Anim,
+            bottom_panel_open: true,
             scene_version: 0,
             viewport_version: u64::MAX,
             last_texture_size: None,
+            last_scene_key: None,
             preview_add: None,
             pending_import: None,
             show_import_dialog: false,
@@ -167,6 +180,9 @@ impl MrpcApp {
 
     pub fn reload_model(&mut self) {
         self.state.reload_model();
+        // Frame the (new) model so it is actually inside the view — the
+        // fixed default camera only fits the tiny demo pack.
+        self.state.fit_camera();
         self.scene_version += 1;
         self.state.vvvf.bve = None;
         self.state.vvvf.bve_fundamental = None;
@@ -1071,6 +1087,7 @@ impl MrpcApp {
                 });
                 ui.menu_button(t(locale, "menu.view"), |ui| {
                     ui.checkbox(&mut self.state.show_grid, t(locale, "view.grid"));
+                    ui.checkbox(&mut self.bottom_panel_open, t(locale, "view.bottom_panel"));
                     if ui.button(t(locale, "view.reset_camera")).clicked() {
                         self.state.cam = Default::default();
                     }
@@ -1480,6 +1497,16 @@ impl MrpcApp {
         let locale = self.state.locale;
         egui::Panel::bottom("status_bar").show(ui, |ui| {
             ui.horizontal(|ui| {
+                // Reopen button for the collapsed bottom panel — always visible
+                // escape hatch for the previously un-closable script editor.
+                if !self.bottom_panel_open
+                    && ui
+                        .small_button("⌃")
+                        .on_hover_text(t(locale, "panel.reopen"))
+                        .clicked()
+                {
+                    self.bottom_panel_open = true;
+                }
                 if let Some(vi) = self.state.selected_vehicle() {
                     let id = self
                         .state
@@ -1504,7 +1531,6 @@ impl MrpcApp {
 
     fn sync_viewport(&mut self) {
         *self.viewport.camera.lock().unwrap() = self.state.cam;
-        let scene = self.state.build_scene();
         let texture = self.state.model.as_ref().and_then(|m| m.texture.clone());
         let flip = self
             .state
@@ -1526,11 +1552,35 @@ impl MrpcApp {
             self.last_texture_size = texture_size;
             self.viewport_version = self.scene_version;
         }
-        *self.viewport.scene.lock().unwrap() = crate::viewport::SceneCpu {
-            meshes: scene.meshes,
-            instances: scene.instances,
-            grid: scene.grid,
+
+        // Rebuild the CPU scene only when something that affects it changed.
+        // `build_scene` deep-clones every vertex of every part, so running it
+        // on every repaint burned CPU for no visual change on real packs.
+        // The door state is part of the key because door positions are baked
+        // into the instances (animated doors must still move every frame);
+        // selection matters for the highlight tint; the grid is a flag.
+        let (door_value, opening) = if self.state.anim.playing {
+            self.state.anim.door()
+        } else {
+            (self.state.door_manual, true)
         };
+        let scene_key = (
+            self.scene_version,
+            door_value.to_bits(),
+            opening,
+            self.state.selection.clone(),
+            self.state.show_grid,
+        );
+        let scene_stale = self.last_scene_key.as_ref() != Some(&scene_key);
+        if scene_stale || version_changed {
+            let scene = self.state.build_scene();
+            *self.viewport.scene.lock().unwrap() = crate::viewport::SceneCpu {
+                meshes: scene.meshes,
+                instances: scene.instances,
+                grid: scene.grid,
+            };
+            self.last_scene_key = Some(scene_key);
+        }
     }
 }
 

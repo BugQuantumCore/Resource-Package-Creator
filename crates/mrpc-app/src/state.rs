@@ -281,52 +281,84 @@ impl EditorState {
     }
 
     /// Load the model of the selected vehicle's primary model entry.
+    ///
+    /// Supports every model format MTR itself loads (see `OptimizedModel`
+    /// / `MqoModelConverter` in the mod): `.obj`, `.bbmodel`, `.mqo` and the
+    /// gzipped `.mqoz` — many published packs (including the major Chinese
+    /// train packs) use Metasequoia models, which previously fell into the
+    /// OBJ branch and silently left an empty viewport.
     pub fn reload_model(&mut self) {
         self.model = None;
         let Some(vi) = self.selected_vehicle() else { return };
         let Some(vehicle) = self.pack.resources.vehicles.get(vi) else { return };
-        let Some(model) = vehicle.models.first() else { return };
+        let Some(model) = vehicle.models.first() else {
+            self.status = t(self.locale, "model.no_model");
+            return;
+        };
 
         let model_resource = model.model_resource.clone();
         let Some(obj_bytes) = self.pack.resource(&model_resource, "obj") else {
             self.status = format!("{}: {}", t(self.locale, "error.io"), model_resource);
             return;
         };
-        let obj_text = String::from_utf8_lossy(obj_bytes).to_string();
+        let lower = model_resource.to_ascii_lowercase();
 
-        // BBModel vs OBJ.
-        let obj = if model_resource.to_ascii_lowercase().ends_with(".bbmodel") {
-            match mrpc_core::bbmodel::parse_bbmodel(&obj_text) {
-                Ok(m) => m,
+        // (model, materials carried over from the importer — only MQO has any).
+        let (obj, imported_materials): (ObjModel, HashMap<String, Material>) =
+            if lower.ends_with(".bbmodel") {
+            match mrpc_core::bbmodel::parse_bbmodel(&String::from_utf8_lossy(obj_bytes)) {
+                Ok(m) => (m, HashMap::new()),
+                Err(e) => {
+                    self.status = format!("{}: {e}", t(self.locale, "error.parse"));
+                    return;
+                }
+            }
+        } else if lower.ends_with(".mqoz") {
+            match mrpc_core::mqo::parse_mqoz(obj_bytes) {
+                Ok(im) => {
+                    let materials = mqo_materials(&im);
+                    (im.obj, materials)
+                }
+                Err(e) => {
+                    self.status = format!("{}: {e}", t(self.locale, "error.parse"));
+                    return;
+                }
+            }
+        } else if lower.ends_with(".mqo") {
+            match mrpc_core::mqo::parse_mqo(&String::from_utf8_lossy(obj_bytes)) {
+                Ok(im) => {
+                    let materials = mqo_materials(&im);
+                    (im.obj, materials)
+                }
                 Err(e) => {
                     self.status = format!("{}: {e}", t(self.locale, "error.parse"));
                     return;
                 }
             }
         } else {
-            match ObjModel::parse(&obj_text) {
-                Ok(m) => m,
+            match ObjModel::parse(&String::from_utf8_lossy(obj_bytes)) {
+                Ok(m) => (m, HashMap::new()),
                 Err(e) => {
                     self.status = format!("{}: {e}", t(self.locale, "error.parse"));
                     return;
                 }
             }
         };
-        if model.flip_texture_v {
-            // Handled per-vertex at mesh upload time.
-        }
 
-        // Materials from the sibling .mtl.
-        let mut materials = HashMap::new();
+        // Materials: the importer's (MQO) or the sibling `.mtl` of the OBJ.
+        let mut materials = imported_materials;
         if let Some(mtllib) = &obj.mtllib {
             let mtl_path = sibling_resource(&model_resource, mtllib, "mtl");
             if let Some(bytes) = self.pack.resource(&mtl_path, "mtl") {
-                materials = mrpc_core::mtl::parse_mtl(&String::from_utf8_lossy(bytes));
+                let parsed = mrpc_core::mtl::parse_mtl(&String::from_utf8_lossy(bytes));
+                if !parsed.is_empty() {
+                    materials = parsed;
+                }
             }
         }
 
         // Properties + positions.
-        let properties: ModelProperties = self
+        let mut properties: ModelProperties = self
             .pack
             .resource(&model.model_properties_resource, "json")
             .and_then(|b| serde_json::from_slice(b).ok())
@@ -336,6 +368,13 @@ impl EditorState {
             .resource(&model.position_definitions_resource, "json")
             .and_then(|b| serde_json::from_slice(b).ok())
             .unwrap_or_default();
+
+        // MTR parity (`ModelProperties.addPartsIfEmpty`): a properties file
+        // with no parts renders the WHOLE model as one part at the origin —
+        // model entries without a `modelPropertiesResource` (bogies, simple
+        // cars, …) are still visible instead of producing an empty viewport.
+        let mut part_names: Vec<String> = obj.parts.iter().map(|p| p.name.clone()).collect();
+        properties.add_parts_if_empty(&mut part_names);
 
         // Texture.
         let texture_resource = model.texture_resource.clone();
@@ -479,6 +518,54 @@ impl EditorState {
     pub fn revalidate(&mut self) {
         self.validation = validate::validate_pack(&self.pack);
     }
+
+    /// Fit the orbit camera to the loaded model so it is actually visible.
+    ///
+    /// Real MTR cars are ~20 blocks = 320 model units long, while the default
+    /// viewing distance (34 units, a grid of ±14) only frames the middle
+    /// sliver of the car — a freshly opened pack looked broken. Mirrors what
+    /// a user would expect from any 3D editor's "frame selected" action.
+    pub fn fit_camera(&mut self) {
+        let scene = self.build_scene();
+        let mut min = [f64::MAX, f64::MAX, f64::MAX];
+        let mut max = [f64::MIN, f64::MIN, f64::MIN];
+        let mut any = false;
+        for inst in &scene.instances {
+            let Some(mesh) = scene.meshes.get(inst.mesh) else { continue };
+            for v in &mesh.vertices {
+                any = true;
+                let p = [
+                    v.pos[0] as f64 + inst.x + inst.dx,
+                    v.pos[1] as f64 + inst.y,
+                    v.pos[2] as f64 + inst.z + inst.dz,
+                ];
+                for a in 0..3 {
+                    min[a] = min[a].min(p[a]);
+                    max[a] = max[a].max(p[a]);
+                }
+            }
+        }
+        if !any {
+            return;
+        }
+        let center = [
+            (min[0] + max[0]) * 0.5,
+            (min[1] + max[1]) * 0.5,
+            (min[2] + max[2]) * 0.5,
+        ];
+        let extent = (max[0] - min[0])
+            .max(max[1] - min[1])
+            .max(max[2] - min[2])
+            .max(1.0);
+        self.cam.target = glam::Vec3::new(
+            center[0] as f32,
+            center[1] as f32,
+            center[2] as f32,
+        );
+        // ~76° of the view taken by the object at 50° fov leaves comfortable
+        // margin around it; real cars land at a Blender-like default distance.
+        self.cam.dist = (extent * 1.35).clamp(6.0, 200.0) as f32;
+    }
 }
 
 /// Compute the sibling resource id (`mtllib` next to the OBJ, per MTR rules).
@@ -505,4 +592,26 @@ fn load_rgba8(bytes: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
     let rgba = img.to_rgba8();
     let (w, h) = (rgba.width(), rgba.height());
     Some((rgba.into_raw(), w, h))
+}
+
+/// Convert the MQO importer's material list into the OBJ/MTL material map the
+/// scene builder expects (MQO models carry their materials inside the file).
+fn mqo_materials(imported: &mrpc_core::import::ImportedModel) -> HashMap<String, Material> {
+    imported
+        .materials
+        .iter()
+        .map(|m| {
+            (
+                m.name.clone(),
+                Material {
+                    kd: m.kd,
+                    ka: [0.0, 0.0, 0.0],
+                    ks: [0.0, 0.0, 0.0],
+                    ns: 0.0,
+                    d: m.d,
+                    map_kd: m.map_kd.clone(),
+                },
+            )
+        })
+        .collect()
 }
