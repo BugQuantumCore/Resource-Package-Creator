@@ -5,6 +5,7 @@
 //! back-to-front (opaque first, translucent last) — correct enough for a
 //! single-car preview and simple to keep in sync with egui.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use egui_wgpu::wgpu;
@@ -317,6 +318,9 @@ pub struct ViewportShared {
     pub target_format: wgpu::TextureFormat,
     /// Aspect ratio of the viewport rect (updated each frame).
     pub aspect: Mutex<f32>,
+    /// Whether the GPU paint callback has run at least once (startup
+    /// diagnostics: proves the render pass was reached).
+    first_prepare: AtomicBool,
     gpu: Mutex<Option<GpuScene>>,
 }
 
@@ -333,6 +337,7 @@ impl ViewportShared {
             flip_texture_v: Mutex::new(false),
             target_format,
             aspect: Mutex::new(16.0 / 9.0),
+            first_prepare: AtomicBool::new(false),
             gpu: Mutex::new(None),
         })
     }
@@ -380,6 +385,14 @@ impl CallbackTrait for ViewportCallback {
         _encoder: &mut wgpu::CommandEncoder,
         _resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
+        if !self
+            .shared
+            .first_prepare
+            .swap(true, Ordering::SeqCst)
+        {
+            crate::logging::set_stage(crate::logging::Stage::FirstPaint);
+            log::info!("viewport: first GPU paint pass (building pipelines)");
+        }
         let aspect = *self.shared.aspect.lock().unwrap();
         let camera = *self.shared.camera.lock().unwrap();
         let view_proj = camera.perspective(aspect) * camera.view();

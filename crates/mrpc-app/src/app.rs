@@ -36,6 +36,10 @@ pub struct MrpcApp {
     pub audio: crate::audio::AudioInit,
     /// VVVF preview engine (waveform/spectrum without audio hardware).
     preview_engine: Engine,
+    /// UI passes seen so far; used for first-frame startup diagnostics
+    /// (the second pass only happens after the first frame was painted and
+    /// presented, which is when eframe makes the window visible).
+    frame_count: u64,
 }
 
 impl MrpcApp {
@@ -75,6 +79,7 @@ impl MrpcApp {
             #[cfg(feature = "audio")]
             audio: crate::audio::AudioInit::spawn(),
             preview_engine: Engine::new(mrpc_vvvf::VvvfParams::default()),
+            frame_count: 0,
         }
     }
 
@@ -709,6 +714,9 @@ impl MrpcApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if self.frame_count == 0 {
+            crate::logging::set_stage(crate::logging::Stage::FirstUi);
+        }
         self.process_pending_open();
         self.process_pending_import();
         self.process_pending_bve_wav();
@@ -731,6 +739,18 @@ impl MrpcApp {
 
         // Push the scene to the render thread each frame.
         self.sync_viewport();
+
+        self.frame_count += 1;
+        if self.frame_count == 1 {
+            // The first UI pass is followed by the first paint+present; make
+            // sure a second pass is scheduled right away, both to react to the
+            // just-created scene and so the "startup complete" marker (below)
+            // proves the first present went through.
+            ui.ctx().request_repaint();
+        } else if self.frame_count == 2 {
+            crate::logging::set_stage(crate::logging::Stage::FirstFrame);
+            crate::logging::mark_startup_complete();
+        }
     }
 
     fn update_vvvf_preview(&mut self) {

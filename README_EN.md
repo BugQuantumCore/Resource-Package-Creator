@@ -41,20 +41,29 @@ installers — Windows `.msi` (Program Files + Start Menu shortcut), Linux
 `.deb` / `.rpm` (depend on libasound2), and macOS `.dmg` containing the `.app`
 bundle (Apple Silicon; first launch may need right-click → Open).
 
-## Troubleshooting startup problems (v0.2.1)
+## Troubleshooting startup problems (v0.2.1, hardened in v0.2.2)
 
-Startup is now fail-visible instead of failing silently behind
+Startup is fail-visible instead of failing silently behind
 `windows_subsystem`: startup errors raise a native dialog and are written to a
 log file; the graphics device is retried with a software renderer
-(WARP / llvmpipe); audio is opened on a background thread and can no longer
-block the first frame (fixes the reported "a process exists but no window
-appears" behaviour).
+(WARP / llvmpipe); audio is opened on a background thread and can never block
+the first frame. v0.2.2 additionally targets the observed "a process exists
+but no window appears": the first present now uses a non-blocking present
+mode (eframe intentionally keeps the window hidden until the first frame is
+painted, and a FIFO/vsync first present has been observed to block forever
+on some Windows + NVIDIA driver combinations); on Windows the Vulkan backend
+is preferred over DX12 for equal hardware; and a startup watchdog pops a
+dialog naming the stage where startup stalled (with the timing trail in the
+log) instead of leaving a windowless process behind.
 
+* The log records every startup stage with a timestamp
+  (`startup stage: …`), which pinpoints where a slow/hung start is.
 * Log file: `mtr-resource-package-creator.log` next to the executable, or
   `%LOCALAPPDATA%\mtr-resource-package-creator\app.log` when the exe directory
   is read-only (Program Files); on Linux
   `~/.local/state/mtr-resource-package-creator/app.log`.
-* Diagnostic switches: `MRPC_LOG_LEVEL=debug`, `MRPC_NO_AUDIO=1`,
-  `WGPU_BACKEND=gl`, `WGPU_POWER_PREF=low`.
+* Diagnostic switches: `MRPC_LOG_LEVEL=debug`, `MRPC_VSYNC=1` (restore FIFO
+  vsync; off by default), `MRPC_NO_AUDIO=1`, `WGPU_BACKEND=gl`,
+  `WGPU_POWER_PREF=low`.
 * If a dialog reports a startup failure, please attach the log file at
   <https://github.com/BugQuantumCore/Resource-Package-Creator/issues>.

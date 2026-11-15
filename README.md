@@ -46,12 +46,13 @@ cargo run -p mrpc-core --example gen_demo -- ./out   # 示例包 + VVVF wav
 
 详见 [BUILDING.md](BUILDING.md)（各平台细节）与 [ARCHITECTURE.md](ARCHITECTURE.md)（模块设计）。
 
-## 启动问题排查（v0.2.1 起）
+## 启动问题排查（v0.2.1 起，v0.2.2 强化）
 
-v0.2.1 加固了启动路径：启动失败会弹出原生对话框并写入日志；图形设备从硬件 GPU 自动回退到软件渲染（WARP / llvmpipe）重试；音频初始化移到后台线程，不再阻塞首帧窗口（修复“只有进程、不见窗口”的报告场景）。
+启动路径分多层加固：启动失败会弹出原生对话框并写入日志；图形设备从硬件 GPU 自动回退到软件渲染（WARP / llvmpipe）重试；音频初始化在后台线程，不阻塞首帧。v0.2.2 针对实测的“只有进程、不见窗口”：首次呈现改用非阻塞 present 模式（eframe 在首帧绘制完成前故意隐藏窗口，FIFO 垂直同步的首次 present 在部分 Windows + NVIDIA 驱动组合上会无限阻塞）；Windows 上优先选择 Vulkan 后端而非 DX12（同等硬件下）；并增加启动看门狗——若 20 秒内首帧未完成，将弹窗报告卡在哪个阶段并写入日志，不再留下无窗口的僵尸进程。
 
+- 启动日志含逐阶段时间戳（`startup stage: …`），可直接看出卡点。
 - 日志文件：默认写在可执行文件同目录的 `mtr-resource-package-creator.log`；不可写时（如 Program Files）写入 `%LOCALAPPDATA%\mtr-resource-package-creator\app.log`（Linux 为 `~/.local/state/mtr-resource-package-creator/app.log`）。
-- 诊断开关：`MRPC_LOG_LEVEL=debug` 提高日志量；`MRPC_NO_AUDIO=1` 排除音频驱动干扰；`WGPU_BACKEND=gl` / `WGPU_POWER_PREF=low` 影响后端选择。
+- 诊断开关：`MRPC_LOG_LEVEL=debug` 提高日志量；`MRPC_VSYNC=1` 恢复 FIFO 垂直同步（默认关闭）；`MRPC_NO_AUDIO=1` 排除音频驱动干扰；`WGPU_BACKEND=gl` / `WGPU_POWER_PREF=low` 影响后端选择。
 - 若弹窗报告启动失败，请附上日志到 <https://github.com/BugQuantumCore/Resource-Package-Creator/issues>。
 
 ## 仓库布局
