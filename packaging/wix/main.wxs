@@ -76,7 +76,10 @@
                       WorkingDirectory="INSTALLDIR"
                       Icon="AppIcon"/>
             <RemoveFolder Id="RemoveShortcutsDir" On="uninstall"/>
-            <RegistryValue Root="HKLM"
+            <!-- HKMU resolves to HKLM for per-machine installs and HKCU for
+                 per-user installs, which is what ICE38/43/57 require for
+                 shortcut components under ProgramMenuFolder. -->
+            <RegistryValue Root="HKMU"
                            Key="Software\BugQuantumCore\MTRResourcePackageCreator"
                            Name="installed"
                            Type="integer"
