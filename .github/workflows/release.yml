@@ -61,17 +61,21 @@ jobs:
           ls -la dist
 
       # ------------------------------------------------------------------- MSI
+      - name: Install WiX 3 (full toolset incl. WixUIExtension)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: choco install wixtoolset --allow-downgrade -y --no-progress
+
       - name: Build MSI installer (WiX 3)
         if: runner.os == 'Windows'
         shell: bash
         run: |
           sed -i "s/ Version=\"[0-9.]*\"/ Version=\"$VER\"/" packaging/wix/main.wxs
           grep -o 'Version="[0-9.]*"' packaging/wix/main.wxs | head -1
-          curl -sSfL -o wix.zip https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip
-          7z x -y -owix314 wix.zip > /dev/null
-          mkdir -p target/wix
-          ./wix314/candle.exe -arch x64 -o target/wix/main.wixobj packaging/wix/main.wxs
-          ./wix314/light.exe -ext WixUIExtension -sice:ICE61 -o target/wix/app.msi target/wix/main.wixobj
+          WIXBIN=$(ls -d "/c/Program Files (x86)/WiX Toolset v3."*/bin | head -n 1)
+          echo "WiX bin: $WIXBIN"
+          "$WIXBIN/candle.exe" -arch x64 -o target/wix/main.wixobj packaging/wix/main.wxs
+          "$WIXBIN/light.exe" -ext WixUIExtension -sice:ICE61 -o target/wix/app.msi target/wix/main.wixobj
           cp target/wix/app.msi "dist/mtr-resource-package-creator-$VER-x64.msi"
           ls -la dist
 
