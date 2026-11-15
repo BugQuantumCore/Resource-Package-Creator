@@ -43,7 +43,7 @@ path = "src/main.rs"
 name = "mtr-resource-package-creator"
 maintainer = "BugQuantumCore"
 copyright = "2026, BugQuantumCore"
-license-file = ["LICENSE", "4"]
+license-file = ["../../LICENSE", "4"]
 depends = "libasound2 | libasound2t64"
 section = "graphics"
 priority = "optional"
@@ -55,8 +55,8 @@ editing.
 """
 assets = [
   ["target/release/mtr-resource-package-creator", "usr/bin/", "755"],
-  ["packaging/mtr-resource-package-creator.desktop", "usr/share/applications/", "644"],
-  ["packaging/icons/icon-512.png", "usr/share/icons/hicolor/512x512/apps/mtr-resource-package-creator.png", "644"],
+  ["../../packaging/mtr-resource-package-creator.desktop", "usr/share/applications/", "644"],
+  ["../../packaging/icons/icon-512.png", "usr/share/icons/hicolor/512x512/apps/mtr-resource-package-creator.png", "644"],
 ]
 
 # ----------------------------------------------------------------------------
@@ -68,8 +68,8 @@ summary = "MTR custom resource pack creator"
 license = "MIT"
 assets = [
   { source = "target/release/mtr-resource-package-creator", dest = "/usr/bin/mtr-resource-package-creator", mode = "755", doc = false },
-  { source = "packaging/mtr-resource-package-creator.desktop", dest = "/usr/share/applications/mtr-resource-package-creator.desktop", mode = "644", doc = false },
-  { source = "packaging/icons/icon-512.png", dest = "/usr/share/icons/hicolor/512x512/apps/mtr-resource-package-creator.png", mode = "644", doc = false },
+  { source = "../../packaging/mtr-resource-package-creator.desktop", dest = "/usr/share/applications/mtr-resource-package-creator.desktop", mode = "644", doc = false },
+  { source = "../../packaging/icons/icon-512.png", dest = "/usr/share/icons/hicolor/512x512/apps/mtr-resource-package-creator.png", mode = "644", doc = false },
 ]
 
 [package.metadata.generate-rpm.requires]

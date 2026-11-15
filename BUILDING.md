@@ -78,7 +78,7 @@ cargo build -p mrpc-app --release
 | --- | --- | --- |
 | Windows | WiX 3.14 (`candle`/`light`) | `choco install wixtoolset` (installs to `C:\Program Files (x86)\WiX Toolset v3.14\bin`, includes WixUIExtension), then `candle -arch x64 packaging/wix/main.wxs -o target/wix/main.wixobj` and `light -ext WixUIExtension -sice:ICE61 -o out.msi target/wix/main.wixobj` (keep `Version=` in `main.wxs` in sync with `Cargo.toml`) |
 | Linux | cargo-deb | `cargo install cargo-deb --locked && cargo deb -p mrpc-app --no-build` → `target/debian/*.deb` |
-| Linux | cargo-generate-rpm | `cargo install cargo-generate-rpm --locked && cargo generate-rpm -p mrpc-app` → `target/generate-rpm/*.rpm` |
+| Linux | cargo-generate-rpm | `cargo install cargo-generate-rpm --locked && cargo generate-rpm -p crates/mrpc-app` (note: `-p` takes the crate directory) → `target/generate-rpm/*.rpm` |
 | macOS | hdiutil | build the `.app` bundle (`packaging/macos/Info.plist`, `packaging/icons/icon.icns`) then `hdiutil create -volname "MTR Resource Package Creator" -srcfolder AppDir -ov -format UDZO out.dmg` |
 
 The release workflow (`.github/workflows/release.yml`, triggered by `v*`
