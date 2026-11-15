@@ -42,8 +42,11 @@
     <Property Id="ARPHELPLINK" Value="https://github.com/BugQuantumCore/Resource-Package-Creator"/>
 
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLDIR"/>
+    <!-- WixUI_InstallDir is the dialog SET id (Welcome → License → InstallDir
+         → VerifyReady); WixUI_InstallDirDlg is only the single dialog inside
+         it, which the linker cannot resolve as a UIRef. -->
     <UI>
-      <UIRef Id="WixUI_InstallDirDlg"/>
+      <UIRef Id="WixUI_InstallDir"/>
     </UI>
     <WixVariable Id="WixUILicenseRtf" Value="packaging/wix/license.rtf"/>
 
