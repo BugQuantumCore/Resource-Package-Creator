@@ -1,5 +1,6 @@
 //! The application: layout orchestration and pack actions.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use egui::{Color32, RichText};
@@ -20,10 +21,9 @@ pub struct MrpcApp {
     scene_version: u64,
     viewport_version: u64,
     last_texture_size: Option<(u32, u32)>,
-    /// Deferred open request: (path, is_zip).
-    pending_open: Option<(String, bool)>,
-    /// Path prompt for File → Open.
-    show_open_dialog: Option<bool>,
+    /// File → 预览添加 flow state: pick a .zip or folder with the system
+    /// file dialog, preview the pack, then add it to the current pack.
+    preview_add: Option<PreviewAdd>,
     /// Deferred model-import request (path to .mqo/.mqoz/.gltf/.glb).
     pending_import: Option<String>,
     /// Path prompt for File → Import model.
@@ -40,6 +40,42 @@ pub struct MrpcApp {
     /// (the second pass only happens after the first frame was painted and
     /// presented, which is when eframe makes the window visible).
     frame_count: u64,
+}
+
+// ------------------------------------------------------------------ preview-add
+
+/// The File → 预览添加… flow: pick a `.zip` archive or an unpacked folder
+/// with the system file dialog (Explorer / Finder / XDG portal), preview the
+/// pack's contents, then add them to the pack being edited — or open the
+/// picked pack as the current one.
+struct PreviewAdd {
+    stage: PreviewAddStage,
+}
+
+enum PreviewAddStage {
+    /// Waiting for the user to pick a source. `error` is set when a previous
+    /// pick could not be loaded as a resource pack.
+    Pick { error: Option<String> },
+    /// A pack was loaded; its contents are shown and can be added / opened.
+    Preview { source: Box<PreviewedPack> },
+    /// The flow finished; show the outcome summary until dismissed.
+    Done { message: String },
+}
+
+/// A pack loaded from a picked path, awaiting the add / open decision.
+struct PreviewedPack {
+    path: PathBuf,
+    is_zip: bool,
+    pack: mrpc_core::pack::ResourcePack,
+}
+
+/// What the preview-add window asked the app to do after a frame.
+enum PreviewAddAction {
+    PickZip,
+    PickFolder,
+    BackToPick,
+    Add,
+    Replace,
 }
 
 impl MrpcApp {
@@ -68,8 +104,7 @@ impl MrpcApp {
             scene_version: 0,
             viewport_version: u64::MAX,
             last_texture_size: None,
-            pending_open: None,
-            show_open_dialog: None,
+            preview_add: None,
             pending_import: None,
             show_import_dialog: false,
             show_bve_wav_dialog: false,
@@ -672,32 +707,142 @@ impl MrpcApp {
 
     // ------------------------------------------------------------------ update
 
-    fn process_pending_open(&mut self) {
-        let Some((path, is_zip)) = self.pending_open.clone() else { return };
-        self.pending_open = None;
-        let p = std::path::PathBuf::from(&path);
+    /// Take the previewed pack out of the preview-add flow (only valid while
+    /// the flow is in the `Preview` stage; the stage is reset to `Pick`).
+    fn take_previewed_pack(&mut self) -> Option<PreviewedPack> {
+        let flow = self.preview_add.as_mut()?;
+        if !matches!(flow.stage, PreviewAddStage::Preview { .. }) {
+            return None;
+        }
+        let stage = std::mem::replace(&mut flow.stage, PreviewAddStage::Pick { error: None });
+        match stage {
+            PreviewAddStage::Preview { source } => Some(*source),
+            _ => unreachable!("the stage was checked to be Preview above"),
+        }
+    }
+
+    /// Load the pack at a picked path into the preview stage.
+    fn load_previewed(&mut self, path: PathBuf, is_zip: bool) {
+        let locale = self.state.locale;
+        log::info!(
+            "preview-add: loading {} ({})",
+            path.display(),
+            if is_zip { "zip" } else { "directory" }
+        );
         let result = if is_zip {
-            mrpc_core::pack::ResourcePack::load_zip(&p)
+            mrpc_core::pack::ResourcePack::load_zip(&path)
         } else {
-            mrpc_core::pack::ResourcePack::load_dir(&p)
+            mrpc_core::pack::ResourcePack::load_dir(&path)
         };
         match result {
             Ok(pack) => {
-                self.state.pack = pack;
-                self.state.pack_path = Some(p.clone());
-                self.state.config.last_open = Some(path.clone());
+                log::info!(
+                    "preview-add: loaded \"{}\" — {} vehicle(s), {} script(s), {} file(s)",
+                    pack.mcmeta.pack.description,
+                    pack.resources.vehicles.len(),
+                    pack.resources.vehicle_scripts.len(),
+                    pack.files.len()
+                );
+                // Remember where the last pack came from so the next picker
+                // starts in the same place.
+                self.state.config.last_open = Some(path.display().to_string());
                 self.state.config.save();
-                self.state.selection = Selection::None;
-                if !self.state.pack.resources.vehicles.is_empty() {
-                    self.state.selection = Selection::Vehicle(0);
+                let stage = PreviewAddStage::Preview {
+                    source: Box::new(PreviewedPack { path, is_zip, pack }),
+                };
+                if let Some(flow) = self.preview_add.as_mut() {
+                    flow.stage = stage;
+                } else {
+                    self.preview_add = Some(PreviewAdd { stage });
                 }
-                self.reload_model();
-                self.state.revalidate();
-                self.state.status = path;
             }
             Err(e) => {
-                self.state.status = format!("{}: {e}", t(self.state.locale, "error.io"));
+                let error = tf(locale, "preview.not_pack", &[("msg", &e.to_string())]);
+                log::warn!("preview-add: load failed: {e}");
+                if let Some(flow) = self.preview_add.as_mut() {
+                    flow.stage = PreviewAddStage::Pick { error: Some(error) };
+                }
             }
+        }
+    }
+
+    /// Merge the previewed pack into the one being edited (the 添加 action).
+    fn apply_preview_merge(&mut self) {
+        let locale = self.state.locale;
+        let Some(source) = self.take_previewed_pack() else { return };
+        let first_new_vehicle = self.state.pack.resources.vehicles.len();
+        let stats = self.state.pack.merge_from(source.pack);
+        log::info!(
+            "preview-add: merged +{} vehicle(s), +{} script(s), +{} sign(s), +{} other, +{} file(s), {} kept, {} renamed",
+            stats.vehicles_added,
+            stats.scripts_added,
+            stats.signs_added,
+            stats.other_added,
+            stats.files_added,
+            stats.files_kept,
+            stats.ids_renamed
+        );
+        self.state.dirty = true;
+        if stats.vehicles_added > 0 {
+            // Select the first vehicle that came in with the merge.
+            self.state.selection = Selection::Vehicle(first_new_vehicle);
+        }
+        self.reload_model();
+        self.state.revalidate();
+
+        let mut message = if stats.added_anything() {
+            tf(
+                locale,
+                "preview.merged",
+                &[
+                    ("v", &stats.vehicles_added.to_string()),
+                    ("s", &stats.scripts_added.to_string()),
+                    ("g", &stats.signs_added.to_string()),
+                    ("f", &stats.files_added.to_string()),
+                ],
+            )
+        } else {
+            t(locale, "preview.nothing")
+        };
+        if stats.other_added > 0 {
+            message.push(' ');
+            message.push_str(&tf(locale, "preview.others_added", &[("n", &stats.other_added.to_string())]));
+        }
+        if stats.files_kept > 0 {
+            message.push(' ');
+            message.push_str(&tf(locale, "preview.files_kept", &[("n", &stats.files_kept.to_string())]));
+        }
+        if stats.ids_renamed > 0 {
+            message.push(' ');
+            message.push_str(&tf(locale, "preview.renamed", &[("n", &stats.ids_renamed.to_string())]));
+        }
+        self.state.status = message.clone();
+        if let Some(flow) = self.preview_add.as_mut() {
+            flow.stage = PreviewAddStage::Done { message };
+        }
+    }
+
+    /// Open the previewed pack as the current one (the old 打开 behaviour,
+    /// kept as the secondary action of the preview window).
+    fn apply_preview_replace(&mut self) {
+        let locale = self.state.locale;
+        let Some(source) = self.take_previewed_pack() else { return };
+        log::info!("preview-add: opening as the current pack: {}", source.path.display());
+        self.state.pack = source.pack;
+        self.state.pack_path = Some(source.path.clone());
+        self.state.config.last_open = Some(source.path.display().to_string());
+        self.state.config.save();
+        self.state.selection = Selection::None;
+        if !self.state.pack.resources.vehicles.is_empty() {
+            self.state.selection = Selection::Vehicle(0);
+        }
+        self.reload_model();
+        self.state.revalidate();
+        let path_text = source.path.display().to_string();
+        self.state.status = path_text.clone();
+        let message = tf(locale, "preview.opened", &[("path", &path_text)]);
+        if let Some(flow) = self.preview_add.as_mut() {
+            flow.stage = PreviewAddStage::Done { message };
         }
     }
 
@@ -713,18 +858,17 @@ impl MrpcApp {
         self.load_manual_bve_wav(&path);
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         if self.frame_count == 0 {
             crate::logging::set_stage(crate::logging::Stage::FirstUi);
         }
-        self.process_pending_open();
         self.process_pending_import();
         self.process_pending_bve_wav();
         let dt = ui.input(|i| i.unstable_dt).min(0.1);
         self.state.anim.step(dt as f64 * 1000.0);
 
         self.menu_bar(ui);
-        self.open_dialog(ui.ctx());
+        self.preview_add_window(ui.ctx(), frame);
         self.import_dialog(ui.ctx());
         self.bve_wav_dialog(ui.ctx());
 
@@ -830,8 +974,6 @@ impl MrpcApp {
 
     fn menu_bar(&mut self, ui: &mut egui::Ui) {
         let locale = self.state.locale;
-        let mut open_zip = false;
-        let mut open_dir = false;
         let mut open_demo = false;
         let mut quit = false;
 
@@ -844,11 +986,10 @@ impl MrpcApp {
                         self.state.selection = Selection::None;
                         self.reload_model();
                     }
-                    if ui.button(t(locale, "app.open_zip")).clicked() {
-                        open_zip = true;
-                    }
-                    if ui.button(t(locale, "app.open_dir")).clicked() {
-                        open_dir = true;
+                    if ui.button(t(locale, "app.preview_add")).clicked() {
+                        // 预览添加: system file dialog → preview → add/open.
+                        self.preview_add =
+                            Some(PreviewAdd { stage: PreviewAddStage::Pick { error: None } });
                     }
                     if ui.button(t(locale, "app.open_demo")).clicked() {
                         open_demo = true;
@@ -909,9 +1050,6 @@ impl MrpcApp {
             });
         });
 
-        if open_zip || open_dir {
-            self.show_open_dialog = Some(open_zip);
-        }
         if open_demo {
             self.state.pack = mrpc_core::demo::create_demo_pack();
             self.state.pack_path = None;
@@ -929,38 +1067,230 @@ impl MrpcApp {
         }
     }
 
-    fn open_dialog(&mut self, ctx: &egui::Context) {
+    /// File → 预览添加… window: pick a `.zip` / folder with the system file
+    /// dialog, preview the pack, then add it to the current pack (or open it
+    /// as the current one).
+    fn preview_add_window(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let locale = self.state.locale;
-        let Some(is_zip) = self.show_open_dialog else { return };
-        let last = self
-            .state
-            .config
-            .last_open
-            .clone()
-            .unwrap_or_else(|| if is_zip { "pack.zip".into() } else { "./pack-dir".into() });
-        let mut path = last;
+        let Some(flow) = self.preview_add.as_mut() else { return };
         let mut close = false;
-        let mut apply = false;
-        egui::Window::new(t(locale, "dialog.open_title"))
-            .collapsible(false)
-            .resizable(false)
-            .show(ctx, |ui| {
-                ui.add(egui::TextEdit::singleline(&mut path).desired_width(420.0));
-                ui.horizontal(|ui| {
-                    if ui.button(t(locale, "common.ok")).clicked() {
-                        apply = true;
-                        close = true;
+        let mut action: Option<PreviewAddAction> = None;
+
+        match &mut flow.stage {
+            PreviewAddStage::Pick { error } => {
+                egui::Window::new(t(locale, "preview.title"))
+                    .collapsible(false)
+                    .resizable(false)
+                    .min_width(500.0)
+                    .show(ctx, |ui| {
+                        ui.label(RichText::new(t(locale, "preview.hint")).weak());
+                        if let Some(err) = error {
+                            ui.add_space(6.0);
+                            ui.label(RichText::new(err.as_str()).color(Color32::from_rgb(235, 120, 120)));
+                        }
+                        ui.add_space(10.0);
+                        ui.horizontal(|ui| {
+                            let zip = ui.add_sized(
+                                [228.0, 36.0],
+                                egui::Button::new(t(locale, "preview.pick_zip")),
+                            );
+                            let dir = ui.add_sized(
+                                [228.0, 36.0],
+                                egui::Button::new(t(locale, "preview.pick_folder")),
+                            );
+                            if zip.clicked() {
+                                action = Some(PreviewAddAction::PickZip);
+                            }
+                            if dir.clicked() {
+                                action = Some(PreviewAddAction::PickFolder);
+                            }
+                        });
+                        ui.add_space(8.0);
+                        if ui.button(t(locale, "common.cancel")).clicked() {
+                            close = true;
+                        }
+                    });
+            }
+            PreviewAddStage::Preview { source } => {
+                // Pre-compute the display data so the window closure only
+                // needs shared borrows.
+                let pack = &source.pack;
+                let path_text = source.path.display().to_string();
+                let kind = t(
+                    locale,
+                    if source.is_zip { "preview.source_zip" } else { "preview.source_dir" },
+                );
+                let description = pack.mcmeta.pack.description.clone();
+                let pack_format = pack.mcmeta.pack.pack_format.to_string();
+                let counts = tf(
+                    locale,
+                    "preview.counts",
+                    &[
+                        ("v", &pack.resources.vehicles.len().to_string()),
+                        ("s", &pack.resources.vehicle_scripts.len().to_string()),
+                        ("g", &pack.resources.signs.len().to_string()),
+                    ],
+                );
+                let total_bytes: u64 = pack.files.values().map(|b| b.len() as u64).sum();
+                let files_line = tf(
+                    locale,
+                    "preview.files",
+                    &[("f", &pack.files.len().to_string()), ("size", &format_size(total_bytes))],
+                );
+                let vehicle_rows: Vec<String> = pack
+                    .resources
+                    .vehicles
+                    .iter()
+                    .map(|v| {
+                        if v.name.is_empty() {
+                            v.id.clone()
+                        } else {
+                            format!("{} — {}", v.id, v.name)
+                        }
+                    })
+                    .collect();
+                let script_ids: Vec<String> =
+                    pack.resources.vehicle_scripts.iter().map(|s| s.id.clone()).collect();
+                let load_errors = pack.load_errors.clone();
+                let has_content = !vehicle_rows.is_empty()
+                    || !script_ids.is_empty()
+                    || !pack.resources.signs.is_empty()
+                    || !pack.resources.rails.is_empty()
+                    || !pack.resources.objects.is_empty()
+                    || !pack.resources.lifts.is_empty()
+                    || !pack.resources.extra.is_empty()
+                    || !pack.resources.legacy.is_empty()
+                    || !pack.files.is_empty();
+
+                egui::Window::new(t(locale, "preview.title"))
+                    .collapsible(false)
+                    .resizable(false)
+                    .min_width(560.0)
+                    .show(ctx, |ui| {
+                        ui.label(RichText::new(format!("{}: {}", t(locale, "preview.path"), path_text)).small());
+                        ui.label(RichText::new(kind).small().weak());
+                        ui.add_space(6.0);
+                        ui.label(format!(
+                            "{}: {}",
+                            t(locale, "preview.description"),
+                            if description.is_empty() { t(locale, "common.none") } else { description }
+                        ));
+                        ui.label(format!("{}: {}", t(locale, "preview.pack_format"), pack_format));
+                        ui.label(counts.as_str());
+                        ui.label(files_line.as_str());
+
+                        if !vehicle_rows.is_empty() {
+                            ui.add_space(6.0);
+                            ui.label(RichText::new(t(locale, "preview.vehicles")).strong());
+                            egui::ScrollArea::vertical()
+                                .max_height(150.0)
+                                .show(ui, |ui| {
+                                    for row in &vehicle_rows {
+                                        ui.label(row);
+                                    }
+                                });
+                        }
+                        if !script_ids.is_empty() {
+                            ui.add_space(4.0);
+                            let shown = script_ids.iter().take(6).cloned().collect::<Vec<_>>().join(", ");
+                            let more = if script_ids.len() > 6 {
+                                format!(" (+{})", script_ids.len() - 6)
+                            } else {
+                                String::new()
+                            };
+                            ui.label(
+                                RichText::new(format!(
+                                    "{}: {}{}",
+                                    t(locale, "preview.scripts"),
+                                    shown,
+                                    more
+                                ))
+                                .weak(),
+                            );
+                        }
+                        if !load_errors.is_empty() {
+                            ui.add_space(4.0);
+                            ui.label(RichText::new(t(locale, "preview.load_notes")).strong());
+                            for err in &load_errors {
+                                ui.label(
+                                    RichText::new(err.as_str())
+                                        .small()
+                                        .color(Color32::from_rgb(235, 170, 120)),
+                                );
+                            }
+                        }
+                        if !has_content {
+                            ui.add_space(4.0);
+                            ui.label(
+                                RichText::new(t(locale, "preview.empty"))
+                                    .color(Color32::from_rgb(235, 180, 90)),
+                            );
+                        }
+
+                        ui.add_space(10.0);
+                        ui.horizontal(|ui| {
+                            let add = ui.add_enabled(
+                                has_content,
+                                egui::Button::new(t(locale, "preview.add")),
+                            );
+                            if add.clicked() {
+                                action = Some(PreviewAddAction::Add);
+                            }
+                            if ui.button(t(locale, "preview.replace")).clicked() {
+                                action = Some(PreviewAddAction::Replace);
+                            }
+                        });
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            if ui.button(t(locale, "preview.repick")).clicked() {
+                                action = Some(PreviewAddAction::BackToPick);
+                            }
+                            if ui.button(t(locale, "common.cancel")).clicked() {
+                                close = true;
+                            }
+                        });
+                    });
+            }
+            PreviewAddStage::Done { message } => {
+                let message = message.clone();
+                egui::Window::new(t(locale, "preview.title"))
+                    .collapsible(false)
+                    .resizable(false)
+                    .min_width(420.0)
+                    .show(ctx, |ui| {
+                        ui.label(&message);
+                        ui.add_space(8.0);
+                        if ui.button(t(locale, "common.ok")).clicked() {
+                            close = true;
+                        }
+                    });
+            }
+        }
+
+        // Handle the requested action after the borrows of the stage are done.
+        if let Some(a) = action {
+            match a {
+                PreviewAddAction::PickZip => {
+                    if let Some(path) = pick_pack_path(locale, &*frame, &self.state.config, true) {
+                        self.load_previewed(path, true);
                     }
-                    if ui.button(t(locale, "common.cancel")).clicked() {
-                        close = true;
+                }
+                PreviewAddAction::PickFolder => {
+                    if let Some(path) = pick_pack_path(locale, &*frame, &self.state.config, false) {
+                        self.load_previewed(path, false);
                     }
-                });
-            });
-        if apply {
-            self.pending_open = Some((path, is_zip));
+                }
+                PreviewAddAction::Add => self.apply_preview_merge(),
+                PreviewAddAction::Replace => self.apply_preview_replace(),
+                PreviewAddAction::BackToPick => {
+                    self.preview_add = Some(PreviewAdd {
+                        stage: PreviewAddStage::Pick { error: None },
+                    });
+                }
+            }
         }
         if close {
-            self.show_open_dialog = None;
+            self.preview_add = None;
         }
     }
 
@@ -1223,6 +1553,58 @@ fn find_cjk_font() -> Option<(String, Vec<u8>)> {
         }
     }
     None
+}
+
+/// Open the system file dialog (Explorer / Finder / XDG portal) to pick a
+/// resource pack source: a `.zip` archive (`zip = true`) or an unpacked pack
+/// folder. Returns `None` when the user cancelled.
+///
+/// Blocking call — used from the UI pass, which is the main thread, as the
+/// native dialogs require. The dialog is parented to the app window so it
+/// always appears on top of it.
+fn pick_pack_path(
+    locale: Locale,
+    frame: &eframe::Frame,
+    config: &AppConfig,
+    zip: bool,
+) -> Option<PathBuf> {
+    let mut dialog = rfd::FileDialog::new();
+    // Start where the last pack was picked from, when that still exists.
+    if let Some(last) = config.last_open.as_deref().map(PathBuf::from) {
+        let start = if last.is_dir() {
+            Some(last)
+        } else {
+            last.parent().filter(|p| p.is_dir()).map(|p| p.to_path_buf())
+        };
+        if let Some(dir) = start {
+            dialog = dialog.set_directory(dir);
+        }
+    }
+    if zip {
+        dialog
+            .set_title(t(locale, "preview.pick_title_zip"))
+            .add_filter(t(locale, "preview.zip_filter"), &["zip"])
+            .set_parent(frame)
+            .pick_file()
+    } else {
+        dialog
+            .set_title(t(locale, "preview.pick_title_folder"))
+            .set_parent(frame)
+            .pick_folder()
+    }
+}
+
+/// Human-readable byte size for the pack preview (B / KB / MB).
+fn format_size(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * KB;
+    if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{bytes} B")
+    }
 }
 
 impl eframe::App for MrpcApp {

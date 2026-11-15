@@ -61,7 +61,189 @@ pub struct ResourcePack {
     pub load_errors: Vec<String>,
 }
 
+/// Outcome of merging another pack into this one ([`ResourcePack::merge_from`]).
+///
+/// "Preview & add" (预览添加): the contents of another pack are merged into the
+/// pack being edited. Resources with colliding ids are renamed (with a `_2`,
+/// `_3`… suffix) instead of being dropped, identical entries are de-duplicated,
+/// and on file-path collisions the currently edited version wins.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MergeStats {
+    pub vehicles_added: usize,
+    pub scripts_added: usize,
+    pub signs_added: usize,
+    /// Rail / object / lift / other pass-through entries (incl. unknown JCM
+    /// sections) added.
+    pub other_added: usize,
+    pub files_added: usize,
+    /// Files whose path already existed with different content; the current
+    /// pack's version was kept.
+    pub files_kept: usize,
+    /// Vehicle / script / sign ids renamed to avoid collisions.
+    pub ids_renamed: usize,
+}
+
+impl MergeStats {
+    /// Whether anything at all was added.
+    pub fn added_anything(&self) -> bool {
+        self.vehicles_added > 0
+            || self.scripts_added > 0
+            || self.signs_added > 0
+            || self.other_added > 0
+            || self.files_added > 0
+    }
+}
+
+/// `base`, or `base_2`, `base_3`… — the first candidate not in `taken`.
+fn unique_id(base: &str, taken: &dyn Fn(&str) -> bool) -> String {
+    let base = if base.is_empty() { "imported" } else { base };
+    if !taken(base) {
+        return base.to_string();
+    }
+    for n in 2u32.. {
+        let candidate = format!("{base}_{n}");
+        if !taken(&candidate) {
+            return candidate;
+        }
+    }
+    unreachable!("an unused candidate is found within u32 iterations");
+}
+
 impl ResourcePack {
+    /// Merge all resources of `other` into `self` (File → 预览添加).
+    ///
+    /// Policy:
+    /// - `vehicles` / `vehicleScripts` / `signs`: appended. An entry that
+    ///   already exists **byte-identical** is skipped (so adding the same pack
+    ///   twice is a no-op); an entry whose id collides with a different entry
+    ///   is renamed (`id_2`, `id_3`…). Renamed script ids are re-linked from
+    ///   the vehicles added in the same merge.
+    /// - `rails` / `objects` / `lifts` / unknown extra sections: appended
+    ///   (identical values de-duplicated); an extra section that already
+    ///   exists keeps the current pack's version.
+    /// - `files`: inserted; on a path collision with **different** content the
+    ///   currently edited version wins (`files_kept`).
+    /// - `mcmeta` (description, pack_format) and legacy MTR-3 sections of the
+    ///   current pack are preserved; incoming legacy sections are only copied
+    ///   across when the current pack has none.
+    pub fn merge_from(&mut self, other: ResourcePack) -> MergeStats {
+        let mut stats = MergeStats::default();
+        let ResourcePack { mut resources, files, mcmeta: _, load_errors: _ } = other;
+
+        // ---- files (current pack wins on conflict) ----
+        for (path, bytes) in files {
+            match self.files.get(&path) {
+                Some(existing) if *existing != bytes => stats.files_kept += 1,
+                Some(_) => {} // identical — nothing to do
+                None => {
+                    self.files.insert(path, bytes);
+                    stats.files_added += 1;
+                }
+            }
+        }
+
+        // ---- vehicle scripts (rename on collision, remember the mapping) ----
+        let mut script_renames: Vec<(String, String)> = Vec::new();
+        for mut script in std::mem::take(&mut resources.vehicle_scripts) {
+            let equal_existing = self
+                .resources
+                .vehicle_scripts
+                .iter()
+                .any(|s| serde_json::to_value(s).ok() == serde_json::to_value(&script).ok());
+            if equal_existing {
+                continue; // already present, identical — reuse it
+            }
+            if self.resources.vehicle_script(&script.id).is_some() {
+                let old = script.id.clone();
+                let new = unique_id(&old, &|id| self.resources.vehicle_script(id).is_some());
+                script.id = new.clone();
+                script_renames.push((old, new));
+                stats.ids_renamed += 1;
+            }
+            self.resources.vehicle_scripts.push(script);
+            stats.scripts_added += 1;
+        }
+
+        // ---- vehicles (rename on collision; re-link renamed scripts) ----
+        let first_new_vehicle = self.resources.vehicles.len();
+        for mut vehicle in std::mem::take(&mut resources.vehicles) {
+            let equal_existing = self
+                .resources
+                .vehicles
+                .iter()
+                .any(|v| serde_json::to_value(v).ok() == serde_json::to_value(&vehicle).ok());
+            if equal_existing {
+                continue;
+            }
+            if self.resources.vehicle(&vehicle.id).is_some() {
+                vehicle.id = unique_id(&vehicle.id, &|id| self.resources.vehicle(id).is_some());
+                stats.ids_renamed += 1;
+            }
+            self.resources.vehicles.push(vehicle);
+            stats.vehicles_added += 1;
+        }
+        if !script_renames.is_empty() {
+            for vehicle in self.resources.vehicles.iter_mut().skip(first_new_vehicle) {
+                if let Some(script_id) = &vehicle.script_id {
+                    if let Some((_, renamed)) =
+                        script_renames.iter().find(|(old, _)| old == script_id)
+                    {
+                        vehicle.script_id = Some(renamed.clone());
+                    }
+                }
+            }
+        }
+
+        // ---- signs ----
+        for mut sign in std::mem::take(&mut resources.signs) {
+            let equal_existing = self
+                .resources
+                .signs
+                .iter()
+                .any(|s| serde_json::to_value(s).ok() == serde_json::to_value(&sign).ok());
+            if equal_existing {
+                continue;
+            }
+            if self.resources.signs.iter().any(|s| s.id == sign.id) {
+                sign.id =
+                    unique_id(&sign.id, &|id| self.resources.signs.iter().any(|s| s.id == id));
+                stats.ids_renamed += 1;
+            }
+            self.resources.signs.push(sign);
+            stats.signs_added += 1;
+        }
+
+        // ---- rails / objects / lifts / unknown extra sections ----
+        append_dedup(
+            &mut self.resources.rails,
+            std::mem::take(&mut resources.rails),
+            &mut stats.other_added,
+        );
+        append_dedup(
+            &mut self.resources.objects,
+            std::mem::take(&mut resources.objects),
+            &mut stats.other_added,
+        );
+        append_dedup(
+            &mut self.resources.lifts,
+            std::mem::take(&mut resources.lifts),
+            &mut stats.other_added,
+        );
+        for (key, value) in resources.extra {
+            if !self.resources.extra.contains_key(&key) {
+                self.resources.extra.insert(key, value);
+                stats.other_added += 1;
+            }
+        }
+        // Legacy MTR-3 sections: only copy across when the current pack has none.
+        if self.resources.legacy.is_empty() {
+            stats.other_added += resources.legacy.len();
+            self.resources.legacy = resources.legacy;
+        }
+
+        stats
+    }
+
     /// A minimal, valid empty pack.
     pub fn new(description: &str) -> ResourcePack {
         ResourcePack {
@@ -229,6 +411,20 @@ fn collect_files(root: &Path, dir: &Path, out: &mut BTreeMap<String, Vec<u8>>) -
     Ok(())
 }
 
+/// Append `incoming` pass-through values to `target`, skipping values that are
+/// already present (identity by serialised equality).
+fn append_dedup(target: &mut Vec<serde_json::Value>, incoming: Vec<serde_json::Value>, added: &mut usize) {
+    for value in incoming {
+        let known = target
+            .iter()
+            .any(|v| serde_json::to_value(v).ok() == Some(value.clone()));
+        if !known {
+            target.push(value);
+            *added += 1;
+        }
+    }
+}
+
 /// A generated 128×128 pack icon (dark rail + MTR-ish colours) so exported
 /// packs always have a `pack.png`.
 fn default_pack_png() -> Vec<u8> {
@@ -313,5 +509,137 @@ mod tests {
         assert!(bytes.len() > 100);
         let img = image::load_from_memory(&bytes).unwrap();
         assert_eq!((img.width(), img.height()), (128, 128));
+    }
+
+    fn vehicle(id: &str, name: &str, script: Option<&str>) -> crate::vehicle::VehicleResource {
+        crate::vehicle::VehicleResource {
+            id: id.into(),
+            name: name.into(),
+            script_id: script.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn merge_disjoint_packs() {
+        let mut a = ResourcePack::new("A");
+        a.resources.vehicles.push(vehicle("train_a", "Train A", Some("script_a")));
+        a.resources.vehicle_scripts.push(crate::script::VehicleScriptEntry {
+            id: "script_a".into(),
+            ..Default::default()
+        });
+        a.set_resource("mtr:custom/a/train.obj", "obj", b"o a\n".to_vec());
+
+        let mut b = ResourcePack::new("B");
+        b.resources.vehicles.push(vehicle("train_b", "Train B", Some("script_b")));
+        b.resources.vehicle_scripts.push(crate::script::VehicleScriptEntry {
+            id: "script_b".into(),
+            ..Default::default()
+        });
+        b.set_resource("mtr:custom/b/train.obj", "obj", b"o b\n".to_vec());
+
+        let stats = a.merge_from(b);
+        assert_eq!(stats.vehicles_added, 1);
+        assert_eq!(stats.scripts_added, 1);
+        assert_eq!(stats.files_added, 1);
+        assert_eq!(stats.ids_renamed, 0);
+        assert_eq!(stats.files_kept, 0);
+        assert_eq!(a.resources.vehicles.len(), 2);
+        // The added vehicle keeps pointing at its own (added) script.
+        assert_eq!(a.resources.vehicles[1].script_id.as_deref(), Some("script_b"));
+        assert!(a.files.contains_key("assets/mtr/custom/b/train.obj"));
+        assert_eq!(a.mcmeta.pack.description, "A");
+    }
+
+    #[test]
+    fn merge_renames_collisions_and_relinks_scripts() {
+        let mut a = ResourcePack::new("A");
+        a.resources.vehicles.push(vehicle("k8", "Current K8", Some("lcd")));
+        a.resources.vehicle_scripts.push(crate::script::VehicleScriptEntry {
+            id: "lcd".into(),
+            ..Default::default()
+        });
+        a.set_resource("mtr:custom/shared.txt", "txt", b"current".to_vec());
+
+        let mut b = ResourcePack::new("B");
+        b.resources.vehicles.push(vehicle("k8", "Other K8", Some("lcd")));
+        b.resources.vehicle_scripts.push(crate::script::VehicleScriptEntry {
+            id: "lcd".into(),
+            prepend_expressions: vec!["extra".into()],
+            ..Default::default()
+        });
+        b.set_resource("mtr:custom/shared.txt", "txt", b"incoming".to_vec());
+
+        let stats = a.merge_from(b);
+        assert_eq!(stats.vehicles_added, 1);
+        assert_eq!(stats.scripts_added, 1);
+        assert_eq!(stats.ids_renamed, 2); // vehicle id + script id
+        assert_eq!(stats.files_kept, 1);
+        assert_eq!(stats.files_added, 0);
+
+        let ids: Vec<&str> = a.resources.vehicles.iter().map(|v| v.id.as_str()).collect();
+        assert_eq!(ids, vec!["k8", "k8_2"]);
+        let script_ids: Vec<&str> =
+            a.resources.vehicle_scripts.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(script_ids, vec!["lcd", "lcd_2"]);
+        // The renamed vehicle is re-linked to the renamed script.
+        assert_eq!(a.resources.vehicles[1].script_id.as_deref(), Some("lcd_2"));
+        // Current file content wins.
+        assert_eq!(a.files.get("assets/mtr/custom/shared.txt").unwrap(), b"current");
+    }
+
+    #[test]
+    fn merge_same_pack_twice_is_noop() {
+        let mut a = ResourcePack::new("A");
+        a.set_resource("mtr:custom/a/train.obj", "obj", b"o a\n".to_vec());
+
+        let mut b = ResourcePack::new("B");
+        b.resources.vehicles.push(vehicle("train_b", "Train B", None));
+        b.set_resource("mtr:custom/b/train.obj", "obj", b"o b\n".to_vec());
+
+        let first = a.merge_from(b.clone());
+        assert!(first.added_anything());
+        let second = a.merge_from(b);
+        assert!(!second.added_anything());
+        assert_eq!(second.files_kept, 0); // identical files are not conflicts
+        assert_eq!(a.resources.vehicles.len(), 1);
+    }
+
+    #[test]
+    fn merge_signs_and_passthrough_sections() {
+        let mut a = ResourcePack::new("A");
+        a.resources.signs.push(crate::format::SignResource {
+            id: "sign_a".into(),
+            ..Default::default()
+        });
+        a.resources.rails.push(serde_json::json!({"id": "rail_a"}));
+
+        let mut b = ResourcePack::new("B");
+        b.resources.signs.push(crate::format::SignResource {
+            id: "sign_a".into(),
+            name: "different".into(),
+            ..Default::default()
+        });
+        b.resources.rails.push(serde_json::json!({"id": "rail_a"}));
+        b.resources.rails.push(serde_json::json!({"id": "rail_b"}));
+
+        let stats = a.merge_from(b);
+        assert_eq!(stats.signs_added, 1);
+        assert_eq!(stats.other_added, 1); // rail_b only; identical rail_a is deduped
+        assert_eq!(stats.ids_renamed, 1); // sign_a → sign_a_2
+        let sign_ids: Vec<&str> = a.resources.signs.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(sign_ids, vec!["sign_a", "sign_a_2"]);
+        assert_eq!(a.resources.rails.len(), 2);
+    }
+
+    #[test]
+    fn unique_id_appends_suffixes() {
+        // Free id passes through unchanged.
+        assert_eq!(unique_id("y", &|_| false), "y");
+        assert_eq!(unique_id("", &|_| false), "imported");
+        // "x" and "x_2" taken → first free candidate is "x_3".
+        assert_eq!(unique_id("x", &|id| matches!(id, "x" | "x_2")), "x_3");
+        // "x", "x_2" and "x_3" taken → "x_4".
+        assert_eq!(unique_id("x", &|id| matches!(id, "x" | "x_2" | "x_3")), "x_4");
     }
 }

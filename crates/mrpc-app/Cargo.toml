@@ -19,6 +19,9 @@ serde_json = { workspace = true }
 log = { workspace = true }
 bytemuck = { version = "1", features = ["derive"] }
 image = { workspace = true }
+# Native file/folder pickers (Explorer on Windows, Finder on macOS, XDG portal
+# on Linux) for the 预览添加 flow.
+rfd = { workspace = true }
 
 # Native error dialogs for GUI-only (windows_subsystem) builds.
 [target.'cfg(windows)'.dependencies]
