@@ -70,5 +70,21 @@ cargo build -p mrpc-app --release
 # intend to edit translations at runtime (they are embedded by default).
 ```
 
+### Native installers
+
+`cargo build -p mrpc-app --release --features audio` first, then:
+
+| Platform | Tool | Command |
+| --- | --- | --- |
+| Windows | WiX 3.14 (`candle`/`light`) | `candle -arch x64 packaging/wix/main.wxs -o target/wix/main.wixobj` then `light -ext WixUIExtension -sice:ICE61 -o out.msi target/wix/main.wixobj` (keep `Version=` in `main.wxs` in sync with `Cargo.toml`) |
+| Linux | cargo-deb | `cargo install cargo-deb --locked && cargo deb -p mrpc-app --no-build` → `target/debian/*.deb` |
+| Linux | cargo-generate-rpm | `cargo install cargo-generate-rpm --locked && cargo generate-rpm -p mrpc-app` → `target/generate-rpm/*.rpm` |
+| macOS | hdiutil | build the `.app` bundle (`packaging/macos/Info.plist`, `packaging/icons/icon.icns`) then `hdiutil create -volname "MTR Resource Package Creator" -srcfolder AppDir -ov -format UDZO out.dmg` |
+
+The release workflow (`.github/workflows/release.yml`, triggered by `v*`
+tags) does all of this automatically and attaches the portable `.zip`
+archives **and** the `.msi` / `.deb` / `.rpm` / `.dmg` installers to the
+GitHub Release.
+
 CI builds for the three platforms are defined in
 `.github/workflows/ci.yml`.

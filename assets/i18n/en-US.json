@@ -199,6 +199,8 @@
   "vvvf.spectrum": "Spectrum",
   "vvvf.fundamental": "Fundamental",
   "vvvf.no_audio_build": "Built without audio output — waveform preview only (rebuild with --features audio)",
+  "vvvf.audio_starting": "Starting audio output…",
+  "vvvf.audio_unavailable": "Audio output unavailable",
   "vvvf.no_bve_data": "This vehicle has no BVE sound set (bveSoundBaseResource)",
   "vvvf.sound_count": "{n} motor sound(s)",
   "vvvf.render_wav": "Render 5 s WAV…",

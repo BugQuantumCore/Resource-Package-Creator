@@ -284,9 +284,18 @@ fn vvvf_tab(app: &mut MrpcApp, ui: &mut egui::Ui, locale: Locale) {
         }
         #[cfg(feature = "audio")]
         {
-            if app.audio.is_none() {
-                ui.separator();
-                ui.weak(t(locale, "vvvf.no_audio_build"));
+            use crate::audio::AudioStatus;
+            match app.audio.status() {
+                AudioStatus::Ready => {}
+                AudioStatus::Starting => {
+                    ui.separator();
+                    ui.weak(t(locale, "vvvf.audio_starting"));
+                }
+                AudioStatus::Failed(reason) => {
+                    ui.separator();
+                    ui.weak(t(locale, "vvvf.audio_unavailable"));
+                    ui.small(format!("({reason})"));
+                }
             }
         }
         if let Some(msg) = app.state.vvvf.message.clone() {

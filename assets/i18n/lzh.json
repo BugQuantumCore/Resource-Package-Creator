@@ -199,6 +199,8 @@
   "vvvf.spectrum": "頻譜",
   "vvvf.fundamental": "基波",
   "vvvf.no_audio_build": "此器無音——唯覽波形（以 --features audio 重構之）",
+  "vvvf.audio_starting": "音訊啟始中……",
+  "vvvf.audio_unavailable": "音訊不可用",
   "vvvf.no_bve_data": "此車未設 BVE 音集（bveSoundBaseResource）",
   "vvvf.sound_count": "機聲 {n}",
   "vvvf.render_wav": "演 5 秒 WAV…",

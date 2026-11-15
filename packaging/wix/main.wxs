@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  MSI definition for MTR Resource Package Creator (WiX v3, built with
+  candle/light from the repository root):
+
+      curl -sSfL -o wix.zip https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip
+      7z x -y -owix314 wix.zip
+      ./wix314/candle.exe -arch x64 -o target/wix/main.wixobj packaging/wix/main.wxs
+      ./wix314/light.exe -ext WixUIExtension -sice:ICE61 -o dist/msi.mmg target/wix/main.wixobj
+
+  The Version attribute is kept in sync with Cargo.toml by the release
+  workflow (sed). UpgradeCode must never change.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product
+      Id="*"
+      Name="MTR Resource Package Creator"
+      Language="1033"
+      Codepage="65001"
+      Version="0.2.1"
+      Manufacturer="BugQuantumCore"
+      UpgradeCode="18221bfd-14ce-40a1-915e-3eb6e177624b">
+
+    <Package
+        Description="Standalone creator for Minecraft Transit Railway 4.0.x custom resource packs"
+        Comments="MIT License"
+        InstallerVersion="200"
+        Compressed="yes"
+        InstallScope="perMachine"
+        Platform="x64"/>
+
+    <MajorUpgrade
+        AllowSameVersionUpgrades="yes"
+        DowngradeErrorMessage="A newer version of MTR Resource Package Creator is already installed."/>
+
+    <MediaTemplate EmbedCab="yes"/>
+
+    <Icon Id="AppIcon" SourceFile="packaging/icons/icon.ico"/>
+    <Property Id="ARPPRODUCTICON" Value="AppIcon"/>
+    <Property Id="ARPHELPLINK" Value="https://github.com/BugQuantumCore/Resource-Package-Creator"/>
+
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLDIR"/>
+    <UI>
+      <UIRef Id="WixUI_InstallDirDlg"/>
+    </UI>
+    <WixVariable Id="WixUILicenseRtf" Value="packaging/wix/license.rtf"/>
+
+    <Feature Id="Main" Level="1">
+      <ComponentGroupRef Id="AppComponents"/>
+    </Feature>
+  </Product>
+
+  <Fragment>
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLDIR" Name="MTR Resource Package Creator">
+          <Component Id="MainEXE" Guid="*" Win64="yes">
+            <File Id="MainEXEFile"
+                  Name="mtr-resource-package-creator.exe"
+                  Source="target/release/mtr-resource-package-creator.exe"
+                  KeyPath="yes"/>
+          </Component>
+        </Directory>
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="AppStartMenuDir" Name="MTR Resource Package Creator">
+          <Component Id="StartMenuShortcut" Guid="d9f925b9-4211-4834-a51c-7ffc7c56296f" Win64="yes">
+            <Shortcut Id="AppShortcut"
+                      Name="MTR Resource Package Creator"
+                      Target="[INSTALLDIR]mtr-resource-package-creator.exe"
+                      WorkingDirectory="INSTALLDIR"
+                      Icon="AppIcon"/>
+            <RemoveFolder Id="RemoveShortcutsDir" On="uninstall"/>
+            <RegistryValue Root="HKLM"
+                           Key="Software\BugQuantumCore\MTRResourcePackageCreator"
+                           Name="installed"
+                           Type="integer"
+                           Value="1"
+                           KeyPath="yes"/>
+          </Component>
+        </Directory>
+      </Directory>
+    </Directory>
+
+    <ComponentGroup Id="AppComponents">
+      <ComponentRef Id="MainEXE"/>
+      <ComponentRef Id="StartMenuShortcut"/>
+    </ComponentGroup>
+  </Fragment>
+</Wix>

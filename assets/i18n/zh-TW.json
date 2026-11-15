@@ -199,6 +199,8 @@
   "vvvf.spectrum": "頻譜",
   "vvvf.fundamental": "基波",
   "vvvf.no_audio_build": "此建置未包含音訊輸出——僅提供波形預覽（請以 --features audio 重新建置）",
+  "vvvf.audio_starting": "正在初始化音訊輸出……",
+  "vvvf.audio_unavailable": "音訊輸出不可用",
   "vvvf.no_bve_data": "此列車未設定 BVE 音效集（bveSoundBaseResource）",
   "vvvf.sound_count": "{n} 個電機音效",
   "vvvf.render_wav": "渲染 5 秒 WAV…",

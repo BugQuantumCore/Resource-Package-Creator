@@ -2359,7 +2359,7 @@ dependencies = [
 
 [[package]]
 name = "mrpc-app"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bytemuck",
  "cpal",
@@ -2368,16 +2368,18 @@ dependencies = [
  "egui-wgpu",
  "glam",
  "image",
+ "log",
  "mrpc-core",
  "mrpc-script",
  "mrpc-vvvf",
  "serde",
  "serde_json",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
 name = "mrpc-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64",
  "flate2",
@@ -2392,7 +2394,7 @@ dependencies = [
 
 [[package]]
 name = "mrpc-script"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "libloading 0.9.1",
  "rquickjs",
@@ -2402,7 +2404,7 @@ dependencies = [
 
 [[package]]
 name = "mrpc-vvvf"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "cc",
 ]

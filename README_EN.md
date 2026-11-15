@@ -31,3 +31,30 @@ See [README.md](README.md) (Chinese, the main document), [BUILDING.md](BUILDING.
 and [ARCHITECTURE.md](ARCHITECTURE.md). MIT licensed; format knowledge derived
 from reading the open-source MTR, TSC and Joban Client Mod (Yanyang) projects —
 no code or assets from them are included.
+
+## Downloads & installation
+
+Prebuilt artifacts for every platform are published on
+[GitHub Releases](https://github.com/BugQuantumCore/Resource-Package-Creator/releases)
+(automatically built for `v*` tags): portable `.zip` archives plus native
+installers — Windows `.msi` (Program Files + Start Menu shortcut), Linux
+`.deb` / `.rpm` (depend on libasound2), and macOS `.dmg` containing the `.app`
+bundle (Apple Silicon; first launch may need right-click → Open).
+
+## Troubleshooting startup problems (v0.2.1)
+
+Startup is now fail-visible instead of failing silently behind
+`windows_subsystem`: startup errors raise a native dialog and are written to a
+log file; the graphics device is retried with a software renderer
+(WARP / llvmpipe); audio is opened on a background thread and can no longer
+block the first frame (fixes the reported "a process exists but no window
+appears" behaviour).
+
+* Log file: `mtr-resource-package-creator.log` next to the executable, or
+  `%LOCALAPPDATA%\mtr-resource-package-creator\app.log` when the exe directory
+  is read-only (Program Files); on Linux
+  `~/.local/state/mtr-resource-package-creator/app.log`.
+* Diagnostic switches: `MRPC_LOG_LEVEL=debug`, `MRPC_NO_AUDIO=1`,
+  `WGPU_BACKEND=gl`, `WGPU_POWER_PREF=low`.
+* If a dialog reports a startup failure, please attach the log file at
+  <https://github.com/BugQuantumCore/Resource-Package-Creator/issues>.

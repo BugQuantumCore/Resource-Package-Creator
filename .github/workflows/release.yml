@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   build:
-    name: Build binaries (${{ matrix.os }})
+    name: Build ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
@@ -39,7 +39,12 @@ jobs:
         run: cargo build -p mrpc-app --release --features audio
       - name: Generate demo artifacts
         run: cargo run -p mrpc-core --example gen_demo -- ./out
-      - name: Package
+      - name: Workspace version
+        shell: bash
+        run: echo "VER=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)" >> "$GITHUB_ENV"
+
+      # ----------------------------------------------------------- portable zip
+      - name: Package portable archive
         shell: bash
         run: |
           mkdir -p dist
@@ -47,15 +52,68 @@ jobs:
           cp out/mrpc-demo-pack.zip out/vvvf-demo.wav dist/ 2>/dev/null || true
           cd dist
           if [[ "$RUNNER_OS" == "Windows" ]]; then
-            7z a "../${{ matrix.artifact }}.zip" .
+            7z a "../${{ matrix.artifact }}-${VER}.zip" .
           else
-            zip -r "../${{ matrix.artifact }}.zip" .
+            zip -r "../${{ matrix.artifact }}-${VER}.zip" .
           fi
+          mv "../${{ matrix.artifact }}-${VER}.zip" .
+          cd ..
+          ls -la dist
+
+      # ------------------------------------------------------------------- MSI
+      - name: Build MSI installer (WiX 3)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          sed -i "s/ Version=\"[0-9.]*\"/ Version=\"$VER\"/" packaging/wix/main.wxs
+          grep -o 'Version="[0-9.]*"' packaging/wix/main.wxs | head -1
+          curl -sSfL -o wix.zip https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip
+          7z x -y -owix314 wix.zip > /dev/null
+          mkdir -p target/wix
+          ./wix314/candle.exe -arch x64 -o target/wix/main.wixobj packaging/wix/main.wxs
+          ./wix314/light.exe -ext WixUIExtension -sice:ICE61 -o target/wix/app.msi target/wix/main.wixobj
+          cp target/wix/app.msi "dist/mtr-resource-package-creator-$VER-x64.msi"
+          ls -la dist
+
+      # ------------------------------------------------------------ deb / rpm
+      - name: Build .deb (cargo-deb)
+        if: runner.os == 'Linux'
+        run: |
+          cargo install cargo-deb --locked
+          cargo deb -p mrpc-app --no-build
+          cp target/debian/*.deb dist/
+          ls -la dist
+
+      - name: Build .rpm (cargo-generate-rpm)
+        if: runner.os == 'Linux'
+        run: |
+          cargo install cargo-generate-rpm --locked
+          cargo generate-rpm -p mrpc-app
+          cp target/generate-rpm/*.rpm dist/
+          ls -la dist
+
+      # ------------------------------------------------------------------- dmg
+      - name: Build .app bundle and .dmg (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          APP="dist/MTR Resource Package Creator.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp "target/release/${{ matrix.binary }}" "$APP/Contents/MacOS/"
+          sed "s/__VERSION__/$VER/" packaging/macos/Info.plist > "$APP/Contents/Info.plist"
+          cp packaging/icons/icon.icns "$APP/Contents/Resources/icon.icns"
+          codesign --force --deep --sign - --timestamp=none "$APP"
+          mkdir -p dmgroot
+          cp -R "$APP" dmgroot/
+          hdiutil create -volname "MTR Resource Package Creator" -srcfolder dmgroot -ov -format UDZO "dist/mtr-resource-package-creator-$VER-macos-arm64.dmg"
+          rm -rf dmgroot
+          ls -la dist
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}.zip
+          name: ${{ matrix.artifact }}-${{ env.VER }}
+          path: dist
 
   release:
     name: Publish GitHub Release
@@ -76,3 +134,7 @@ jobs:
           generate_release_notes: true
           files: |
             artifacts/*/*.zip
+            artifacts/*/*.msi
+            artifacts/*/*.deb
+            artifacts/*/*.rpm
+            artifacts/*/*.dmg

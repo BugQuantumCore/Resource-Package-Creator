@@ -18,6 +18,16 @@
 | **编辑与打包** | 车辆全部字段（长度、宽度、转向架、风挡、贯通道、BVE/旧版音源……）、模型引用、部件（condition/renderStage/type/门动画/显示屏全参数）。校验器在导出前报告错误/警告；导出为符合原版结构的 zip（`pack.mcmeta`、`pack.png`、`assets/mtr/mtr_custom_resources.json`…），并保留未知字段与 MTR3 旧格式条目。 |
 | **示例包** | 「文件 → 生成演示包」一键创建完全合法的示例车辆（程序化 OBJ/贴图/properties/positions/BVE 曲线/JS 脚本），亦可用 `cargo run -p mrpc-core --example gen_demo` 生成 zip 与试听 wav。 |
 
+## 下载与安装
+
+在 [GitHub Releases](https://github.com/BugQuantumCore/Resource-Package-Creator/releases) 提供各平台预构建产物（`v*` 标签自动构建）：
+
+| 平台 | 文件 | 说明 |
+| --- | --- | --- |
+| Windows | `…-windows-x64-<版本>.zip`（便携）/ `…-x64.msi`（安装包） | MSI 安装到 Program Files 并创建开始菜单快捷方式 |
+| Linux | `…-linux-x64-<版本>.zip`（便携）/ `…_<版本>_amd64.deb` / `…-x86_64.rpm` | deb/rpm 自动依赖 libasound2 |
+| macOS | `…-macos-arm64-<版本>.zip` / `…-macos-arm64.dmg` | dmg 含 `.app`（Apple Silicon，首次打开需右键→打开） |
+
 ## 构建
 
 需要 **Rust 1.82+** 与 **C++17 编译器**（g++/clang++/MSVC）。
@@ -35,6 +45,14 @@ cargo run -p mrpc-core --example gen_demo -- ./out   # 示例包 + VVVF wav
 ```
 
 详见 [BUILDING.md](BUILDING.md)（各平台细节）与 [ARCHITECTURE.md](ARCHITECTURE.md)（模块设计）。
+
+## 启动问题排查（v0.2.1 起）
+
+v0.2.1 加固了启动路径：启动失败会弹出原生对话框并写入日志；图形设备从硬件 GPU 自动回退到软件渲染（WARP / llvmpipe）重试；音频初始化移到后台线程，不再阻塞首帧窗口（修复“只有进程、不见窗口”的报告场景）。
+
+- 日志文件：默认写在可执行文件同目录的 `mtr-resource-package-creator.log`；不可写时（如 Program Files）写入 `%LOCALAPPDATA%\mtr-resource-package-creator\app.log`（Linux 为 `~/.local/state/mtr-resource-package-creator/app.log`）。
+- 诊断开关：`MRPC_LOG_LEVEL=debug` 提高日志量；`MRPC_NO_AUDIO=1` 排除音频驱动干扰；`WGPU_BACKEND=gl` / `WGPU_POWER_PREF=low` 影响后端选择。
+- 若弹窗报告启动失败，请附上日志到 <https://github.com/BugQuantumCore/Resource-Package-Creator/issues>。
 
 ## 仓库布局
 

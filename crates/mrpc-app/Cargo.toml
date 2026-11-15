@@ -16,8 +16,13 @@ egui-wgpu = { workspace = true }
 glam = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+log = { workspace = true }
 bytemuck = { version = "1", features = ["derive"] }
 image = { workspace = true }
+
+# Native error dialogs for GUI-only (windows_subsystem) builds.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_UI_WindowsAndMessaging", "Win32_Foundation"] }
 
 [features]
 default = []
@@ -30,3 +35,47 @@ optional = true
 [[bin]]
 name = "mtr-resource-package-creator"
 path = "src/main.rs"
+
+# ----------------------------------------------------------------------------
+# Linux .deb packaging (cargo-deb)
+# ----------------------------------------------------------------------------
+[package.metadata.deb]
+name = "mtr-resource-package-creator"
+maintainer = "BugQuantumCore"
+copyright = "2026, BugQuantumCore"
+license-file = ["LICENSE", "5"]
+depends = "libasound2 | libasound2t64"
+section = "graphics"
+priority = "optional"
+short_description = "MTR custom resource pack creator"
+long_description = """
+Standalone creator for Minecraft Transit Railway 4.0.x custom resource
+packs: 3D model preview (OBJ/MQO/MQOZ/glTF), door animation preview, VVVF
+audition with BVE real-sound playback, and JCM (Yanyang) train-script
+editing.
+"""
+assets = [
+  ["target/release/mtr-resource-package-creator", "usr/bin/", "755"],
+  ["packaging/mtr-resource-package-creator.desktop", "usr/share/applications/", "644"],
+  ["packaging/icons/icon-512.png", "usr/share/icons/hicolor/512x512/apps/mtr-resource-package-creator.png", "644"],
+]
+
+# ----------------------------------------------------------------------------
+# Linux .rpm packaging (cargo-generate-rpm)
+# ----------------------------------------------------------------------------
+[package.metadata.generate-rpm]
+name = "mtr-resource-package-creator"
+summary = "MTR custom resource pack creator"
+description = """Standalone creator for Minecraft Transit Railway 4.0.x
+custom resource packs: 3D model preview (OBJ/MQO/MQOZ/glTF), door animation
+preview, VVVF audition with BVE real-sound playback, and JCM (Yanyang)
+train-script editing."""
+license = "MIT"
+assets = [
+  { source = "target/release/mtr-resource-package-creator", dest = "/usr/bin/mtr-resource-package-creator", mode = "755", doc = false },
+  { source = "packaging/mtr-resource-package-creator.desktop", dest = "/usr/share/applications/mtr-resource-package-creator.desktop", mode = "644", doc = false },
+  { source = "packaging/icons/icon-512.png", dest = "/usr/share/icons/hicolor/512x512/apps/mtr-resource-package-creator.png", mode = "644", doc = false },
+]
+
+[package.metadata.generate-rpm.requires]
+"alsa-lib" = "*"

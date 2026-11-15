@@ -199,6 +199,8 @@
   "vvvf.spectrum": "Spectre",
   "vvvf.fundamental": "Fondamentale",
   "vvvf.no_audio_build": "Compilé sans sortie audio — aperçu de la forme d'onde uniquement (recompiler avec --features audio)",
+  "vvvf.audio_starting": "Démarrage de la sortie audio…",
+  "vvvf.audio_unavailable": "Sortie audio indisponible",
   "vvvf.no_bve_data": "Ce véhicule n'a pas de jeu de sons BVE (bveSoundBaseResource)",
   "vvvf.sound_count": "{n} son(s) moteur",
   "vvvf.render_wav": "Générer un WAV de 5 s…",

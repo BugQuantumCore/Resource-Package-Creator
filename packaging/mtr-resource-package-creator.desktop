@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=MTR Resource Package Creator
+GenericName=MTR resource pack editor
+Comment=Standalone creator for Minecraft Transit Railway 4.0.x custom resource packs
+Comment[zh_CN]=Minecraft Transit Railway 4.0.x 自定义资源包独立创建器
+Exec=mtr-resource-package-creator %f
+Icon=mtr-resource-package-creator
+Terminal=false
+Categories=Graphics;3DGraphics;Utility;
+MimeType=application/zip;
+StartupNotify=true

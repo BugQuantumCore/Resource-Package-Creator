@@ -31,8 +31,9 @@ pub struct MrpcApp {
     /// Path prompt for the manual BVE motor WAV loop.
     show_bve_wav_dialog: bool,
     pending_bve_wav: Option<String>,
+    /// Live audio output, initialised on a background thread (`feature = "audio"`).
     #[cfg(feature = "audio")]
-    pub audio: Option<crate::audio::AudioOut>,
+    pub audio: crate::audio::AudioInit,
     /// VVVF preview engine (waveform/spectrum without audio hardware).
     preview_engine: Engine,
 }
@@ -69,8 +70,10 @@ impl MrpcApp {
             show_import_dialog: false,
             show_bve_wav_dialog: false,
             pending_bve_wav: None,
+            // Audio opens on a background thread: a hung/slow audio stack
+            // (e.g. WASAPI in an RDP session) must not block the first frame.
             #[cfg(feature = "audio")]
-            audio: crate::audio::AudioOut::try_start().ok(),
+            audio: crate::audio::AudioInit::spawn(),
             preview_engine: Engine::new(mrpc_vvvf::VvvfParams::default()),
         }
     }
@@ -381,9 +384,7 @@ impl MrpcApp {
     /// Replace the BVE playback engine (also on the audio thread).
     pub fn set_bve_engine(&mut self, engine: mrpc_core::bve_playback::BvePlaybackEngine) {
         #[cfg(feature = "audio")]
-        if let Some(audio) = &mut self.audio {
-            audio.set_bve_engine(engine.clone_shared());
-        }
+        self.audio.set_bve_engine(engine.clone_shared());
         self.state.vvvf.bve_engine = Some(engine);
     }
 
@@ -658,9 +659,7 @@ impl MrpcApp {
 
     #[cfg(feature = "audio")]
     pub fn set_audio_playing(&mut self, playing: bool) {
-        if let Some(audio) = &mut self.audio {
-            audio.set_playing(playing);
-        }
+        self.audio.set_playing(playing);
     }
 
     #[cfg(not(feature = "audio"))]
@@ -788,7 +787,7 @@ impl MrpcApp {
         }
 
         #[cfg(feature = "audio")]
-        if let Some(audio) = &mut self.audio {
+        {
             if use_bve {
                 let speed_ms = (vvvf.speed_kmh / 3.6) as f32;
                 let n = vvvf.bve_engine.as_ref().map(|e| e.channel_count()).unwrap_or(0);
@@ -798,9 +797,9 @@ impl MrpcApp {
                     ),
                     None => (vec![0f32; n], vec![0f32; n]),
                 };
-                audio.update(crate::audio::AudioDrive::Bve { rates, gains });
+                self.audio.update(crate::audio::AudioDrive::Bve { rates, gains });
             } else {
-                audio.update(crate::audio::AudioDrive::Synth {
+                self.audio.update(crate::audio::AudioDrive::Synth {
                     params,
                     fundamental_hz: fundamental,
                     power,

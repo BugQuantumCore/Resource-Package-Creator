@@ -3,6 +3,11 @@
 //! The GUI thread updates an [`AudioDrive`] snapshot each frame; the cpal
 //! callback renders either the C++ VVVF synthesiser or the BVE real-sound
 //! playback engine (loop resampling driven by the motor data curves).
+//!
+//! The output stream itself is opened on a background thread by [`AudioInit`]:
+//! audio stacks can hang or take a long time in odd environments (WASAPI with
+//! no audio endpoint, e.g. remote-desktop sessions), which must never stop the
+//! first window from appearing. Set `MRPC_NO_AUDIO=1` to skip audio entirely.
 
 #[cfg(feature = "audio")]
 mod imp {
@@ -77,7 +82,7 @@ mod imp {
             });
 
             let shared_cb = shared.clone();
-            let err_fn = |err| eprintln!("[audio] {err}");
+            let err_fn = |err| log::warn!("[audio] stream error: {err}");
             // cpal 0.18 takes the stream config by value.
             let stream = device
                 .build_output_stream(
@@ -143,10 +148,97 @@ mod imp {
             guard.drive = drive;
         }
     }
+
+    /// Outcome of the background audio startup, surfaced in the UI.
+    #[derive(Clone)]
+    pub enum AudioStatus {
+        /// Still opening the output device.
+        Starting,
+        /// The output stream is live.
+        Ready,
+        /// Audio is unusable in this environment (human-readable reason).
+        Failed(String),
+    }
+
+    /// Handle to the audio output, initialised on a background thread.
+    ///
+    /// Mirrors the methods of [`AudioOut`]; they are no-ops until the stream
+    /// is ready, so the GUI never has to wait for (or fail because of) audio.
+    pub struct AudioInit {
+        out: Arc<Mutex<Option<AudioOut>>>,
+        status: Arc<Mutex<AudioStatus>>,
+    }
+
+    impl AudioInit {
+        /// Spawn the background thread that opens the default output device.
+        pub fn spawn() -> AudioInit {
+            let out: Arc<Mutex<Option<AudioOut>>> = Arc::new(Mutex::new(None));
+            let status: Arc<Mutex<AudioStatus>> =
+                Arc::new(Mutex::new(AudioStatus::Starting));
+            let init = AudioInit {
+                out: out.clone(),
+                status: status.clone(),
+            };
+            let spawned = std::thread::Builder::new()
+                .name("audio-init".to_string())
+                .spawn(move || {
+                    let disabled = std::env::var("MRPC_NO_AUDIO")
+                        .map(|v| !v.is_empty() && v != "0")
+                        .unwrap_or(false);
+                    if disabled {
+                        log::info!("[audio] disabled via MRPC_NO_AUDIO");
+                        *status.lock().unwrap() =
+                            AudioStatus::Failed("disabled (MRPC_NO_AUDIO)".to_string());
+                        return;
+                    }
+                    log::info!("[audio] opening the default output device…");
+                    match AudioOut::try_start() {
+                        Ok(audio) => {
+                            log::info!("[audio] output ready");
+                            *out.lock().unwrap() = Some(audio);
+                            *status.lock().unwrap() = AudioStatus::Ready;
+                        }
+                        Err(err) => {
+                            log::warn!("[audio] unavailable: {err}");
+                            *status.lock().unwrap() = AudioStatus::Failed(err);
+                        }
+                    }
+                });
+            if let Err(err) = spawned {
+                log::warn!("[audio] could not spawn the init thread: {err}");
+                *init.status.lock().unwrap() = AudioStatus::Failed(err.to_string());
+            }
+            init
+        }
+
+        /// Current startup state (polled by the UI).
+        pub fn status(&self) -> AudioStatus {
+            self.status.lock().unwrap().clone()
+        }
+
+        pub fn set_playing(&self, playing: bool) {
+            if let Some(audio) = self.out.lock().unwrap().as_mut() {
+                audio.set_playing(playing);
+            }
+        }
+
+        pub fn update(&self, drive: AudioDrive) {
+            if let Some(audio) = self.out.lock().unwrap().as_mut() {
+                audio.update(drive);
+            }
+        }
+
+        /// Install the BVE playback engine used by [`AudioDrive::Bve`].
+        pub fn set_bve_engine(&self, engine: BvePlaybackEngine) {
+            if let Some(audio) = self.out.lock().unwrap().as_mut() {
+                audio.set_bve_engine(engine);
+            }
+        }
+    }
 }
 
 #[cfg(feature = "audio")]
-pub use imp::{AudioDrive, AudioOut};
+pub use imp::{AudioDrive, AudioInit, AudioStatus};
 
 #[cfg(not(feature = "audio"))]
 mod imp {
