@@ -128,7 +128,12 @@ fn read_mqo_from_zip(bytes: &[u8]) -> Result<String, MqoError> {
         if file.is_dir() {
             continue;
         }
-        let is_mqo = file.name().to_ascii_lowercase().ends_with(".mqo");
+        // zip 9.x: `name()` decodes and can fail — treat an undecodable
+        // name as "not the .mqo document" rather than aborting the scan.
+        let is_mqo = file
+            .name()
+            .map(|n| n.to_ascii_lowercase().ends_with(".mqo"))
+            .unwrap_or(false);
         let mut text = String::new();
         if file.read_to_string(&mut text).is_err() || text.is_empty() {
             continue; // binary entry (texture) or empty — not the document
