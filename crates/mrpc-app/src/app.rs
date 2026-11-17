@@ -652,6 +652,11 @@ impl MrpcApp {
     }
 
     /// Minimal model-properties JSON covering the imported part names.
+    ///
+    /// The MTR schema (and this app's own `ModelPropertiesPart`) matches part
+    /// entries by the `names` ARRAY — the previous single `"name"` string was
+    /// silently dropped on load, leaving every imported model with an empty
+    /// parts list (blank preview despite a successful import).
     fn build_model_properties(
         &self,
         imported: &mrpc_core::import::ImportedModel,
@@ -659,8 +664,7 @@ impl MrpcApp {
         let mut arr = Vec::new();
         for part in &imported.obj.parts {
             arr.push(serde_json::json!({
-                "name": part.name,
-                "type": "part",
+                "names": [part.name],
             }));
         }
         serde_json::json!({ "parts": arr })

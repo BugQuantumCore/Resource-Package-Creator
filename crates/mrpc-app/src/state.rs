@@ -343,7 +343,7 @@ impl EditorState {
     ///
     /// Supports every model format MTR itself loads (see `OptimizedModel`
     /// / `MqoModelConverter` in the mod): `.obj`, `.bbmodel`, `.mqo` and the
-    /// gzipped `.mqoz` — many published packs (including the major Chinese
+    /// `.mqoz` (a ZIP container, with a gzip fallback) — many published packs (including the major Chinese
     /// train packs) use Metasequoia models, which previously fell into the
     /// OBJ branch and silently left an empty viewport.
     pub fn reload_model(&mut self) {
@@ -639,14 +639,20 @@ impl EditorState {
             .max(max[1] - min[1])
             .max(max[2] - min[2])
             .max(1.0);
+        // The AABB above is in MODEL units (1/16 block): the render shader
+        // divides positions by 16, and the grid/camera live in BLOCKS.
+        // Fitting in model units put the target hundreds of blocks away
+        // from a real-size car and clamped dist to 200 — the car rendered
+        // as a sliver, which read as "the model isn't displayed". Convert
+        // to blocks so the framing matches the rendered space.
         self.cam.target = glam::Vec3::new(
-            center[0] as f32,
-            center[1] as f32,
-            center[2] as f32,
+            center[0] as f32 / 16.0,
+            center[1] as f32 / 16.0,
+            center[2] as f32 / 16.0,
         );
         // ~76° of the view taken by the object at 50° fov leaves comfortable
         // margin around it; real cars land at a Blender-like default distance.
-        self.cam.dist = (extent * 1.35).clamp(6.0, 200.0) as f32;
+        self.cam.dist = (extent / 16.0 * 1.35).clamp(6.0, 200.0) as f32;
     }
 }
 

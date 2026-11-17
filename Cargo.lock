@@ -2361,7 +2361,7 @@ dependencies = [
 
 [[package]]
 name = "mrpc-app"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "bytemuck",
  "cpal",
@@ -2382,7 +2382,7 @@ dependencies = [
 
 [[package]]
 name = "mrpc-core"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "base64",
  "flate2",
@@ -2397,7 +2397,7 @@ dependencies = [
 
 [[package]]
 name = "mrpc-script"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "libloading 0.9.1",
  "rquickjs",
@@ -2407,7 +2407,7 @@ dependencies = [
 
 [[package]]
 name = "mrpc-vvvf"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "cc",
 ]

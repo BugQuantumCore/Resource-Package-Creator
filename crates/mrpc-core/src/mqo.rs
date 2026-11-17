@@ -1,6 +1,7 @@
 //! Metasequoia MQO / MQOZ model importer.
 //!
-//! Parses the text-based `.mqo` format (and its gzipped `.mqoz` variant):
+//! Parses the text-based `.mqo` format (and its `.mqoz` variant, a ZIP
+//! container — or plain gzip from third-party tools):
 //! `Material` chunk with `col`/`tex` attributes and `Object` chunks with
 //! `vertex` / `BVertex` and `face` (`V`, `M`, `UV`) data. Unknown chunks and
 //! attributes are skipped tolerantly. The tokeniser keeps line breaks as
@@ -29,6 +30,8 @@ pub enum MqoError {
     Parse(String),
     #[error("MQOZ is not valid gzip data: {0}")]
     Gzip(#[from] std::io::Error),
+    #[error("MQOZ zip container problem: {0}")]
+    Zip(String),
 }
 
 /// Parse a plain-text `.mqo` document into an importable model.
@@ -88,15 +91,58 @@ pub fn parse_mqo(text: &str) -> Result<ImportedModel, MqoError> {
     })
 }
 
-/// Parse a gzipped `.mqoz` document.
+/// Parse a `.mqoz` document.
+///
+/// Metasequoia 4.x writes `.mqoz` as a **ZIP container** holding the `.mqo`
+/// text (the Z in the extension means zip — the gzip-only reader failed on
+/// every real `.mqoz` with "not valid gzip data"). Some third-party tools do
+/// emit plain gzip instead, so the container is detected by its `PK` magic
+/// and gzip remains the fallback.
 pub fn parse_mqoz(bytes: &[u8]) -> Result<ImportedModel, MqoError> {
-    let mut decoder = flate2::read::GzDecoder::new(bytes);
-    let mut text = String::new();
-    decoder.read_to_string(&mut text).map_err(MqoError::Gzip)?;
+    let text = if bytes.starts_with(b"PK") {
+        read_mqo_from_zip(bytes)?
+    } else {
+        let mut decoder = flate2::read::GzDecoder::new(bytes);
+        let mut text = String::new();
+        decoder.read_to_string(&mut text).map_err(MqoError::Gzip)?;
+        text
+    };
     if text.is_empty() {
         return Err(MqoError::Parse("empty after decompression".into()));
     }
     parse_mqo(&text)
+}
+
+/// Pull the `.mqo` document out of a ZIP-container `.mqoz`.
+///
+/// Metasequoia archives may also embed textures (binary, unreadable as text)
+/// — those entries are skipped; the document is the entry named `*.mqo`, or
+/// failing that the first entry that decodes as text.
+fn read_mqo_from_zip(bytes: &[u8]) -> Result<String, MqoError> {
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
+        .map_err(|e| MqoError::Zip(format!("not a valid zip container: {e}")))?;
+    let mut named_mqo: Option<String> = None;
+    let mut first_text: Option<String> = None;
+    for i in 0..archive.len() {
+        let Ok(mut file) = archive.by_index(i) else { continue };
+        if file.is_dir() {
+            continue;
+        }
+        let is_mqo = file.name().to_ascii_lowercase().ends_with(".mqo");
+        let mut text = String::new();
+        if file.read_to_string(&mut text).is_err() || text.is_empty() {
+            continue; // binary entry (texture) or empty — not the document
+        }
+        if is_mqo && named_mqo.is_none() {
+            named_mqo = Some(text.clone());
+        }
+        if first_text.is_none() {
+            first_text = Some(text);
+        }
+    }
+    named_mqo
+        .or(first_text)
+        .ok_or_else(|| MqoError::Parse("zip container holds no .mqo document".into()))
 }
 
 fn parse_material_attrs(p: &mut Parser, name: String) -> ImportedMaterial {
