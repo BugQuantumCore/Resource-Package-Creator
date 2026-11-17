@@ -24,6 +24,10 @@ pub struct MrpcApp {
     /// while its content tower was clipped, which made the script editor
     /// impossible to dismiss.
     pub(crate) bottom_panel_open: bool,
+    /// The floating script editor window (the "脚本编辑界面") — a real
+    /// window with a title-bar close button, resizable, far from the
+    /// cramped docked-tab layout that read as "cannot close / clipped".
+    pub(crate) script_window_open: bool,
     /// Scene version — bumped whenever the model or properties change.
     scene_version: u64,
     viewport_version: u64,
@@ -163,6 +167,7 @@ impl MrpcApp {
             viewport: ViewportShared::new(target_format),
             bottom_tab: BottomTab::Anim,
             bottom_panel_open: true,
+            script_window_open: false,
             scene_version: 0,
             viewport_version: u64::MAX,
             last_texture_size: None,
@@ -953,6 +958,7 @@ impl MrpcApp {
         self.preview_add_window(ui.ctx(), frame);
         self.import_dialog(ui.ctx());
         self.bve_wav_dialog(ui.ctx());
+        self.script_editor_window(ui.ctx());
 
         // VVVF preview synthesis (waveform + spectrum).
         self.update_vvvf_preview();
@@ -1105,6 +1111,17 @@ impl MrpcApp {
                 ui.menu_button(t(locale, "menu.view"), |ui| {
                     ui.checkbox(&mut self.state.show_grid, t(locale, "view.grid"));
                     ui.checkbox(&mut self.bottom_panel_open, t(locale, "view.bottom_panel"));
+                    if ui.button(t(locale, "view.script_editor")).clicked() {
+                        // No script selected yet → jump to the first entry so
+                        // the window opens with content instead of a hint.
+                        if !matches!(self.state.selection, Selection::Script(_))
+                            && !self.state.pack.resources.vehicle_scripts.is_empty()
+                        {
+                            self.state.selection = Selection::Script(0);
+                            self.load_script_editor();
+                        }
+                        self.script_window_open = true;
+                    }
                     if ui.button(t(locale, "view.reset_camera")).clicked() {
                         self.state.cam = Default::default();
                     }
@@ -1449,6 +1466,47 @@ impl MrpcApp {
         if close {
             self.show_bve_wav_dialog = false;
         }
+    }
+
+    /// The script editing interface — a floating, RESIZABLE window with the
+    /// standard title-bar close button.
+    ///
+    /// History: the editor lived first in the right-side properties panel
+    /// (no close affordance at all, 320 px wide) and then as a bottom-panel
+    /// tab (capped at 60% of the window height, squeezed between the
+    /// viewport and the status bar). Both were reported as "cannot be closed
+    /// and shows only part of itself"; an `egui::Window` with `.open()`
+    /// closes with the familiar title-bar ✕, remembers nothing docked, and
+    /// defaults to a large 880×560 layout the editor actually fits in.
+    /// It opens from the outliner (selecting a script entry), from the
+    /// properties panel's summary, or from the View menu.
+    fn script_editor_window(&mut self, ctx: &egui::Context) {
+        if !self.script_window_open {
+            return;
+        }
+        let locale = self.state.locale;
+        let title = match self.state.selection {
+            Selection::Script(si) => self
+                .state
+                .pack
+                .resources
+                .vehicle_scripts
+                .get(si)
+                .map(|e| format!("{} · {}", t(locale, "script.title"), e.id))
+                .unwrap_or_else(|| t(locale, "script.title").to_string()),
+            _ => t(locale, "script.title").to_string(),
+        };
+        let mut open = self.script_window_open;
+        egui::Window::new(title)
+            .open(&mut open) // the title-bar close (✕) button
+            .default_size([880.0, 560.0])
+            .min_size([520.0, 340.0])
+            .resizable(true)
+            .collapsible(true)
+            .show(ctx, |ui| {
+                crate::tabs::script_editor_body(self, ui, locale);
+            });
+        self.script_window_open = open;
     }
 
     fn viewport_center(&mut self, ui: &mut egui::Ui) {

@@ -44,16 +44,20 @@ impl Camera {
         glam::camera::rh::proj::vulkan::perspective(50f32.to_radians(), aspect.max(0.05), 0.1, 400.0)
     }
 
-    /// Drag-to-orbit: the CAMERA follows the mouse.
+    /// Drag-to-orbit — the convention calibrated against the original
+    /// creator's users over three release rounds:
     ///
-    /// `dx`/`dy` are egui drag deltas (x right, y DOWN). Dragging right
-    /// orbits the camera to the screen-right of the target; dragging down
-    /// orbits it downward below the target — so the camera's motion tracks
-    /// the pointer, matching mainstream model viewers (Unity scene view,
-    /// Sketchfab, game editors). The previous `+=` convention moved the
-    /// camera opposite to the drag, which read as inverted controls.
+    /// * **Horizontal (`yaw += dx`)**: the MODEL follows the mouse — dragging
+    ///   right spins the car so its near face sweeps right, the turntable
+    ///   gesture. This matches the right-drag pan below ("grab the scene"),
+    ///   so one mental model covers both rotations.
+    /// * **Vertical (`pitch -= dy`)**: the CAMERA follows the mouse — dragging
+    ///   down orbits the camera below the car (looking up at it), the axis
+    ///   users confirmed feels correct in v0.2.8.
+    ///
+    /// `dx`/`dy` are egui drag deltas (x right, y DOWN).
     pub fn orbit(&mut self, dx: f32, dy: f32) {
-        self.yaw -= dx * 0.008;
+        self.yaw += dx * 0.008;
         self.pitch = (self.pitch - dy * 0.008).clamp(-1.45, 1.45);
     }
 
@@ -188,11 +192,15 @@ pub struct Instance {
     pub z: f64,
     pub dx: f64,
     pub dz: f64,
+    /// Mirrored placement (MTR `positionsFlipped`): the mod renders these
+    /// parts rotated 180° around Y (`rotateYDegrees(180)`), not just at the
+    /// mirrored X coordinate.
+    pub flipped: bool,
 }
 
 impl Instance {
-    pub fn new(mesh: usize, x: f64, y: f64, z: f64, dx: f64, dz: f64) -> Instance {
-        Instance { mesh, x, y, z, dx, dz }
+    pub fn new(mesh: usize, x: f64, y: f64, z: f64, dx: f64, dz: f64, flipped: bool) -> Instance {
+        Instance { mesh, x, y, z, dx, dz, flipped }
     }
 }
 
@@ -266,22 +274,29 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let textured = (in.flags & 4u) != 0u;
 
     var base = in.tint.rgb;
+    var alpha = in.tint.a;
     if (textured) {
-        base = base * textureSample(tex, tex_sampler, in.uv).rgb;
+        // The texture is decoded sRGB→linear by the sampler; its ALPHA also
+        // gates the surface — MTR renders vehicle textures with alpha, so
+        // texels with alpha 0 must vanish (glass, texture margins) instead
+        // of painting their (often white) RGB over the car.
+        let tex = textureSample(tex, tex_sampler, in.uv);
+        base = base * tex.rgb;
+        alpha = alpha * tex.a;
     }
     if (selected) {
-        // Magenta selection rim, Blender style.
-        base = mix(base, vec3<f32>(0.95, 0.45, 0.85), 0.55);
+        // Magenta selection rim, Blender style (linear-space color).
+        base = mix(base, vec3<f32>(0.885, 0.170, 0.677), 0.55);
     }
 
     if (emissive || selected) {
-        return vec4<f32>(base, in.tint.a);
+        return vec4<f32>(base, alpha);
     }
     let ambient = 0.42;
     let diffuse = max(dot(n, l), 0.0) * 0.62;
     let specular = pow(max(dot(n, half_v), 0.0), 40.0) * 0.35;
     let lit = base * (ambient + diffuse) + vec3<f32>(specular);
-    return vec4<f32>(lit, in.tint.a);
+    return vec4<f32>(lit, alpha);
 }
 "#;
 
@@ -489,15 +504,22 @@ impl CallbackTrait for ViewportCallback {
                     let Some(&(offset, count)) = g.mesh_ranges.get(inst.mesh) else {
                         continue;
                     };
-                    let model = Mat4::from_translation(Vec3::new(
+                    // Translate to the placement, then rotate mirrored
+                    // (positionsFlipped) parts 180° around Y — exactly the
+                    // mod's `translate(x,y,z); rotateYDegrees(180)` order.
+                    let mut model = Mat4::from_translation(Vec3::new(
                         (inst.x + inst.dx) as f32,
                         inst.y as f32,
                         (inst.z + inst.dz) as f32,
                     ));
+                    if inst.flipped {
+                        model *= Mat4::from_rotation_y(std::f32::consts::PI);
+                    }
                     let mut tint =
                         [mesh.tint[0], mesh.tint[1], mesh.tint[2], mesh.alpha.clamp(0.05, 1.0)];
                     if mesh.selected {
-                        tint = [0.95, 0.45, 0.85, 1.0];
+                        // Linear-space magenta (≈ sRGB 0.95, 0.45, 0.85).
+                        tint = [0.885, 0.170, 0.677, 1.0];
                     }
                     let flags = (mesh.emissive as u32)
                         | ((mesh.selected as u32) << 1)
@@ -749,12 +771,18 @@ fn build_gpu_scene(
         mapped_at_creation: false,
     });
 
-    // Grid lines.
+    // Grid lines. Authored as sRGB display colors and converted to linear
+    // here — the line shader writes straight to the sRGB target, so passing
+    // sRGB values through would double-brighten them into washed-out gray.
     let mut lines: Vec<LineVertex> = Vec::new();
-    let major = [0.35, 0.35, 0.38, 1.0];
-    let minor = [0.24, 0.24, 0.27, 1.0];
-    let axis_x = [0.75, 0.35, 0.35, 1.0];
-    let axis_z = [0.35, 0.55, 0.8, 1.0];
+    let major3 = mrpc_core::srgb3_to_linear([0.35, 0.35, 0.38]);
+    let major: [f32; 4] = [major3[0], major3[1], major3[2], 1.0];
+    let minor3 = mrpc_core::srgb3_to_linear([0.24, 0.24, 0.27]);
+    let minor: [f32; 4] = [minor3[0], minor3[1], minor3[2], 1.0];
+    let axis_x3 = mrpc_core::srgb3_to_linear([0.75, 0.35, 0.35]);
+    let axis_x: [f32; 4] = [axis_x3[0], axis_x3[1], axis_x3[2], 1.0];
+    let axis_z3 = mrpc_core::srgb3_to_linear([0.35, 0.55, 0.80]);
+    let axis_z: [f32; 4] = [axis_z3[0], axis_z3[1], axis_z3[2], 1.0];
     for i in -14..=14i32 {
         let c = if i % 4 == 0 { major } else { minor };
         lines.push(LineVertex { pos: [i as f32, 0.0, -13.0], color: c });

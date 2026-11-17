@@ -309,9 +309,13 @@ impl MeshBuilder {
 
     fn finish(mut self) -> String {
         // Prepend v/vt/vn declarations (parts reference them by absolute index).
+        // Vertices are authored in PIXELS (1/16 block, matching the position
+        // definitions) but MTR OBJ resources must be in BLOCKS ("each
+        // unit's length is 1m") — emit ÷16 so the generated pack is valid
+        // in-game. The app re-scales ×16 on load, so the preview is unchanged.
         let mut header = String::new();
         for p in &self.positions {
-            header.push_str(&format!("v {} {} {}\n", p[0], p[1], p[2]));
+            header.push_str(&format!("v {} {} {}\n", p[0] / 16.0, p[1] / 16.0, p[2] / 16.0));
         }
         for t in &self.uvs {
             header.push_str(&format!("vt {} {}\n", t[0], t[1]));
@@ -326,10 +330,12 @@ impl MeshBuilder {
     }
 }
 
-/// The demo car OBJ. Coordinate system (model units, 1/16 block):
-/// X across the car (±20 = width 2.5), Y up (0 = rail top), Z along the car
-/// (±160 = length 20). Parts: body, roof, window_band, door ×2 sides,
-/// door_interior, display, end caps.
+/// The demo car OBJ. Coordinates are authored in PIXELS (1 unit = 1/16
+/// block, like the position definitions); the writer converts them to
+/// MTR-standard BLOCK units (÷16). X across the car (±20 px = width 2.5
+/// blocks), Y up (0 = rail top), Z along the car (±160 px = length 20
+/// blocks). Parts: body, roof, window_band, door ×2 sides, door_interior,
+/// display, end caps.
 fn demo_car_obj() -> String {
     let mut m = MeshBuilder::new();
 

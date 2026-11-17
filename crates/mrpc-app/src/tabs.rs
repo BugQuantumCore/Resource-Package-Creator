@@ -1,5 +1,6 @@
-//! Bottom tab bar: door animation timeline, VVVF audition, script testing,
-//! export & validation.
+//! Bottom tab bar: door animation timeline, VVVF audition, export &
+//! validation — plus the script editor body hosted by the floating
+//! (closable) script editor window in `app.rs`.
 
 use egui::{Color32, Pos2, RichText, Stroke};
 
@@ -12,7 +13,6 @@ use crate::state::Selection;
 pub enum BottomTab {
     Anim,
     Vvvf,
-    Script,
     Export,
 }
 
@@ -41,10 +41,12 @@ pub fn bottom_tabs(app: &mut MrpcApp, ui: &mut egui::Ui) {
                 // the instinctive toggle affordance — alongside the explicit
                 // labeled collapse button on the right (the tiny bare "▾"
                 // glyph was easy to miss, which read as "cannot close").
+                // The script editor lives in its own closable floating
+                // window (see `script_editor_window`), not here: a docked
+                // tab could never be "closed" in the way users expect.
                 let tabs = [
                     (BottomTab::Anim, "anim.title"),
                     (BottomTab::Vvvf, "vvvf.title"),
-                    (BottomTab::Script, "script.title"),
                     (BottomTab::Export, "export.title"),
                 ];
                 for (kind, key) in tabs {
@@ -71,7 +73,6 @@ pub fn bottom_tabs(app: &mut MrpcApp, ui: &mut egui::Ui) {
             match tab {
                 BottomTab::Anim => anim_tab(app, ui, locale),
                 BottomTab::Vvvf => vvvf_tab(app, ui, locale),
-                BottomTab::Script => script_tab(app, ui, locale),
                 BottomTab::Export => export_tab(app, ui, locale),
             }
         });
@@ -650,23 +651,39 @@ fn draw_spectrum(ui: &mut egui::Ui, rect: egui::Rect, bars: &[(f64, f32)], title
 }
 
 // ---------------------------------------------------------------------------
-// Script testing
+// Script editor (body of the floating, closable script editor window)
 // ---------------------------------------------------------------------------
 
-fn script_tab(app: &mut MrpcApp, ui: &mut egui::Ui, locale: Locale) {
-    // The whole tab scrolls vertically, so a short (or collapsed-small) panel
-    // shows a scrollbar instead of cutting the console/native rows off-screen
-    // — that clipping is what made the editor window show “only a part” of
-    // itself and made its bottom controls unreachable.
+/// The complete script editing interface — entry metadata, code editor,
+/// SCRIPT_INPUT, JS test-run console, native module test and the API
+/// reference — hosted by `MrpcApp::script_editor_window`.
+///
+/// This used to be a bottom-panel TAB: capped at 60% of the window height,
+/// squeezed between the viewport and the status bar, and with no close
+/// control users could discover, which was reported as “the script editing
+/// interface cannot be closed and is displayed incompletely” across three
+/// releases. A floating `egui::Window` has the standard title-bar close
+/// button, can be resized to any size (and maximized), and reopens from the
+/// outliner, the properties panel or the View menu.
+pub fn script_editor_body(app: &mut MrpcApp, ui: &mut egui::Ui, locale: Locale) {
+    // The whole window body scrolls vertically: at any window size every
+    // control (input, native row, API list) stays reachable instead of being
+    // clipped by the window edge — the "shows only part of itself" failure.
     egui::ScrollArea::vertical()
-        .id_salt("script_tab")
+        .id_salt("script_editor")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            script_tab_inner(app, ui, locale);
+            script_editor_inner(app, ui, locale);
         });
 }
 
-fn script_tab_inner(app: &mut MrpcApp, ui: &mut egui::Ui, locale: Locale) {
+fn script_editor_inner(app: &mut MrpcApp, ui: &mut egui::Ui, locale: Locale) {
+    let si = match app.state.selection {
+        Selection::Script(si) => Some(si),
+        _ => None,
+    };
+
+    // Top row: templates + run.
     ui.horizontal(|ui| {
         if ui.button(t(locale, "script.template_js")).clicked() {
             app.new_script_entry(true);
@@ -674,44 +691,153 @@ fn script_tab_inner(app: &mut MrpcApp, ui: &mut egui::Ui, locale: Locale) {
         if ui.button(t(locale, "script.template_cpp")).clicked() {
             app.new_script_entry(false);
         }
-        if ui.button(t(locale, "script.run")).clicked() {
+        if si.is_some() && ui.button(t(locale, "script.run")).clicked() {
             app.run_script_test();
         }
         ui.separator();
         ui.weak(t(locale, "script.native_note"));
     });
-
     ui.separator();
+
+    let Some(si) = si else {
+        ui.weak(t(locale, "script.none_selected"));
+        return;
+    };
+
     let remaining = ui.available_size();
     ui.horizontal(|ui| {
-        // Editor.
+        // Left column: code editor + test console.
         ui.vertical(|ui| {
             ui.strong(t(locale, "script.editor"));
             ui.add(
                 egui::TextEdit::multiline(&mut app.state.script.code)
                     .code_editor()
-                    .desired_rows(10)
-                    .desired_width((remaining.x * 0.55).max(220.0)),
+                    .desired_rows(16)
+                    .desired_width((remaining.x * 0.58).max(320.0)),
             );
+            ui.separator();
+            ui.strong(t(locale, "script.console"));
+            egui::ScrollArea::vertical()
+                .id_salt("script_console")
+                .stick_to_bottom(true)
+                .max_height(110.0)
+                .show(ui, |ui| {
+                    for line in &app.state.script.console {
+                        ui.monospace(RichText::new(line).small());
+                    }
+                });
         });
+        // Right column: entry metadata + API reference.
         ui.vertical(|ui| {
+            let mut remove_at = None;
+            let mut apply = false;
+            if let Some(entry) = app.state.pack.resources.vehicle_scripts.get_mut(si) {
+                ui.label(t(locale, "script.entry_id"));
+                ui.add(
+                    egui::TextEdit::singleline(&mut entry.id)
+                        .desired_width(f32::INFINITY),
+                );
+                ui.add_space(4.0);
+                ui.label(t(locale, "script.locations"));
+                let location_count = entry.script_locations.len();
+                for li in 0..location_count {
+                    ui.horizontal(|ui| {
+                        let mut s = match entry.script_locations.get(li) {
+                            Some(serde_json::Value::String(s)) => s.clone(),
+                            Some(other) => other.to_string(),
+                            None => String::new(),
+                        };
+                        ui.add(
+                            egui::TextEdit::singleline(&mut s)
+                                .desired_width(f32::INFINITY),
+                        );
+                        if ui.small_button("✕").clicked() {
+                            remove_at = Some(li);
+                        }
+                        if let Some(slot) = entry.script_locations.get_mut(li) {
+                            *slot = serde_json::Value::String(s);
+                        }
+                    });
+                }
+                if let Some(li) = remove_at {
+                    if li < entry.script_locations.len() {
+                        entry.script_locations.remove(li);
+                    }
+                }
+                if ui.button(t(locale, "script.add_location")).clicked() {
+                    entry.script_locations
+                        .push(serde_json::Value::String("mtr:custom/pack/js/main.js".into()));
+                }
+                ui.add_space(4.0);
+                ui.label(t(locale, "script.prepend"));
+                let mut prepend = entry.prepend_expressions.join("\n");
+                ui.add(
+                    egui::TextEdit::multiline(&mut prepend)
+                        .code_editor()
+                        .desired_rows(2)
+                        .desired_width(f32::INFINITY),
+                );
+                entry.prepend_expressions = prepend
+                    .lines()
+                    .map(|l| l.trim().to_string())
+                    .filter(|l| !l.is_empty())
+                    .collect();
+                ui.add_space(4.0);
+                ui.label(t(locale, "script.data_fetch_mode"));
+                let modes = [
+                    mrpc_core::script::DataFetchMode::Skip,
+                    mrpc_core::script::DataFetchMode::Mandatory,
+                    mrpc_core::script::DataFetchMode::All,
+                ];
+                let mut mode =
+                    entry.data_fetch_mode.unwrap_or(mrpc_core::script::DataFetchMode::Skip);
+                egui::ComboBox::from_id_salt("fetch_mode")
+                    .selected_text(crate::panels::fetch_mode_name(locale, mode))
+                    .show_ui(ui, |ui| {
+                        for m in modes {
+                            ui.selectable_value(&mut mode, m, crate::panels::fetch_mode_name(locale, m));
+                        }
+                    });
+                entry.data_fetch_mode = Some(mode);
+                ui.checkbox(&mut entry.force_load, t(locale, "script.force_load"));
+            }
+            // `entry`'s borrow ended above; the whole-app call is fine now.
+            ui.add_space(4.0);
+            if ui.button(t(locale, "common.apply")).clicked() {
+                apply = true;
+            }
+            if apply {
+                app.save_script_back();
+            }
+            ui.separator();
             ui.strong(t(locale, "script.api_reference"));
-            // Bounded: `remaining.y - 40` could go NEGATIVE on a small panel,
-            // which egui then treats as unbounded — the API list demanded
-            // ~1200pt and dragged the panel across most of the screen.
             egui::ScrollArea::vertical()
                 .id_salt("api_ref")
-                .max_height((remaining.y - 40.0).clamp(80.0, 220.0))
+                .max_height((remaining.y * 0.55).clamp(120.0, 420.0))
                 .show(ui, |ui| {
                     for (name, sig) in VEHICLE_API {
-                        ui.monospace(RichText::new(*sig).small().color(egui::Color32::from_rgb(150, 200, 255)))
-                            .on_hover_text(*name);
+                        ui.monospace(
+                            RichText::new(*sig)
+                                .small()
+                                .color(egui::Color32::from_rgb(150, 200, 255)),
+                        )
+                        .on_hover_text(*name);
                     }
                 });
         });
     });
 
-    // Native module testing.
+    // SCRIPT_INPUT + native module testing.
+    ui.separator();
+    ui.vertical(|ui| {
+        ui.label(t(locale, "script.input"));
+        ui.add(
+            egui::TextEdit::multiline(&mut app.state.script.input_json)
+                .code_editor()
+                .desired_rows(4)
+                .desired_width(f32::INFINITY),
+        );
+    });
     ui.horizontal(|ui| {
         ui.label("C++:");
         ui.add(
@@ -731,18 +857,6 @@ fn script_tab_inner(app: &mut MrpcApp, ui: &mut egui::Ui, locale: Locale) {
             ui.colored_label(egui::Color32::from_rgb(220, 120, 120), msg);
         }
     });
-
-    ui.separator();
-    ui.strong(t(locale, "script.console"));
-    egui::ScrollArea::vertical()
-        .id_salt("script_console")
-        .stick_to_bottom(true)
-        .max_height(90.0)
-        .show(ui, |ui| {
-            for line in &app.state.script.console {
-                ui.monospace(RichText::new(line).small());
-            }
-        });
 }
 
 /// JCM `VehicleWrapper` API surface (reference panel).

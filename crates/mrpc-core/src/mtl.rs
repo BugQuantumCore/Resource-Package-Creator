@@ -48,7 +48,15 @@ pub fn parse_mtl(text: &str) -> HashMap<String, Material> {
                 if let Some((_, mat)) = &mut current {
                     if keyword.eq_ignore_ascii_case("kd") {
                         let v: Vec<f32> = tokens.take(3).map(|t| t.parse().unwrap_or(0.0)).collect();
-                        mat.kd = [v.first().copied().unwrap_or(0.0), v.get(1).copied().unwrap_or(0.0), v.get(2).copied().unwrap_or(0.0)];
+                        // MTL Kd is an sRGB-authored display color; the
+                        // viewport is a linear pipeline with an sRGB target,
+                        // so convert here or every untextured surface renders
+                        // washed out (double gamma).
+                        mat.kd = crate::srgb3_to_linear([
+                            v.first().copied().unwrap_or(0.0),
+                            v.get(1).copied().unwrap_or(0.0),
+                            v.get(2).copied().unwrap_or(0.0),
+                        ]);
                     } else {
                         mat.map_kd = tokens.next().map(|s| s.trim_matches('"').to_string());
                     }
@@ -107,7 +115,11 @@ d 0.6
         let m = parse_mtl(mtl);
         assert_eq!(m.len(), 2);
         let body = &m["body_mat"];
-        assert_eq!(body.kd, [0.8, 0.8, 0.85]);
+        // Kd is converted sRGB → linear (0.8 sRGB ≈ 0.6038 linear).
+        let expect = crate::srgb3_to_linear([0.8, 0.8, 0.85]);
+        for i in 0..3 {
+            assert!((body.kd[i] - expect[i]).abs() < 1e-6);
+        }
         assert_eq!(body.map_kd.as_deref(), Some("body.png"));
         let glass = &m["glass"];
         assert_eq!(glass.d, 0.6);

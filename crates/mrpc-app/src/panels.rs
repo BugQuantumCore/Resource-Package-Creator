@@ -133,6 +133,10 @@ pub fn outliner(app: &mut MrpcApp, ui: &mut egui::Ui) {
     if let Some(i) = select_script {
         app.state.selection = Selection::Script(i);
         app.load_script_editor();
+        // Selecting a script entry opens the (closable) script editor
+        // window — the editor itself is a floating window now, not a
+        // permanent side-panel takeover.
+        app.script_window_open = true;
     }
 
     ui.add_space(6.0);
@@ -615,89 +619,53 @@ fn part_props(app: &mut MrpcApp, ui: &mut egui::Ui, _vi: usize, _mi: usize, pi: 
 }
 
 fn script_props(app: &mut MrpcApp, ui: &mut egui::Ui, si: usize, locale: Locale) {
-    let Some(entry) = app.state.pack.resources.vehicle_scripts.get_mut(si) else { return };
+    let Some(entry) = app.state.pack.resources.vehicle_scripts.get(si) else { return };
     ui.strong(format!("{} · {}", t(locale, "script.title"), entry.id));
     ui.separator();
-    text_field(ui, &t(locale, "script.entry_id"), &mut entry.id);
 
-    ui.label(t(locale, "script.locations"));
-    let mut remove_at = None;
-    let location_count = entry.script_locations.len();
-    for li in 0..location_count {
-        ui.horizontal(|ui| {
-            let mut s = match entry.script_locations.get(li) {
-                Some(serde_json::Value::String(s)) => s.clone(),
-                Some(other) => other.to_string(),
-                None => String::new(),
-            };
-            ui.add(egui::TextEdit::singleline(&mut s).desired_width(f32::INFINITY));
-            if ui.small_button("✕").clicked() {
-                remove_at = Some(li);
-            }
-            if let Some(slot) = entry.script_locations.get_mut(li) {
-                *slot = serde_json::Value::String(s);
-            }
-        });
+    // READ-ONLY summary. The editing interface moved into the floating
+    // (closable, resizable) script editor window: cramming the code editor
+    // into this 320-px side panel was the original "cannot close / shows
+    // only part of itself" complaint. One button hands over.
+    let locations = entry
+        .script_locations
+        .iter()
+        .map(|v| match v {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    ui.label(format!("{}: {}", t(locale, "script.entry_id"), entry.id));
+    ui.label(format!(
+        "{}: {}",
+        t(locale, "script.locations"),
+        if locations.is_empty() { t(locale, "common.none") } else { locations }
+    ));
+    ui.label(format!(
+        "{}: {}",
+        t(locale, "script.data_fetch_mode"),
+        fetch_mode_name(locale, entry.data_fetch_mode.unwrap_or(mrpc_core::script::DataFetchMode::Skip))
+    ));
+    ui.label(format!(
+        "{} {}",
+        t(locale, "script.force_load"),
+        if entry.force_load { "✓" } else { "✕" }
+    ));
+    let prepend = entry.prepend_expressions.join(" · ");
+    if !prepend.is_empty() {
+        ui.label(format!("{}: {}", t(locale, "script.prepend"), prepend));
     }
-    if let Some(li) = remove_at {
-        if li < entry.script_locations.len() {
-            entry.script_locations.remove(li);
-        }
-    }
-    if ui.button(t(locale, "script.add_location")).clicked() {
-        entry.script_locations
-            .push(serde_json::Value::String("mtr:custom/pack/js/main.js".into()));
-    }
 
-    ui.separator();
-    ui.label(t(locale, "script.prepend"));
-    let mut prepend = entry.prepend_expressions.join("\n");
-    ui.add(
-        egui::TextEdit::multiline(&mut prepend)
-            .code_editor()
-            .desired_rows(2)
-            .desired_width(f32::INFINITY),
-    );
-    entry.prepend_expressions = prepend
-        .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty())
-        .collect();
-
-    ui.label(t(locale, "script.data_fetch_mode"));
-    let modes = [
-        mrpc_core::script::DataFetchMode::Skip,
-        mrpc_core::script::DataFetchMode::Mandatory,
-        mrpc_core::script::DataFetchMode::All,
-    ];
-    let mut mode = entry.data_fetch_mode.unwrap_or(mrpc_core::script::DataFetchMode::Skip);
-    egui::ComboBox::from_id_salt("fetch_mode")
-        .selected_text(fetch_mode_name(locale, mode))
-        .show_ui(ui, |ui| {
-            for m in modes {
-                ui.selectable_value(&mut mode, m, fetch_mode_name(locale, m));
-            }
-        });
-    entry.data_fetch_mode = Some(mode);
-    ui.checkbox(&mut entry.force_load, t(locale, "script.force_load"));
-
-    ui.separator();
-    ui.label(t(locale, "script.editor"));
-    ui.add(
-        egui::TextEdit::multiline(&mut app.state.script.code)
-            .code_editor()
-            .desired_rows(14)
-            .desired_width(f32::INFINITY),
-    );
-    ui.label(t(locale, "script.input"));
-    ui.add(
-        egui::TextEdit::multiline(&mut app.state.script.input_json)
-            .code_editor()
-            .desired_rows(4)
-            .desired_width(f32::INFINITY),
-    );
-    if ui.button(t(locale, "common.apply")).clicked() {
-        app.save_script_back();
+    ui.add_space(8.0);
+    if ui
+        .add(
+            egui::Button::new(t(locale, "script.open_editor"))
+                .min_size(egui::vec2(ui.available_width(), 34.0)),
+        )
+        .clicked()
+    {
+        app.script_window_open = true;
     }
 }
 

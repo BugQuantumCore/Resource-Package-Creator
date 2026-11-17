@@ -10,7 +10,7 @@
 
 | 模块 | 说明 |
 | --- | --- |
-| **模型预览** | Blender 风格深色 3D 视口（轨道相机、网格、双面材质、半透明玻璃、选中高亮）。支持 OBJ + MTL、Blockbench `.bbmodel`，按 MTR 规则解析部件（`o`/`g` 分组）、贴图（`default.png` → 车辆贴图、同路径 png、`flipTextureV`）与材质（Kd/透明度）。 |
+| **模型预览** | Blender 风格深色 3D 视口（轨道相机、网格、双面材质、半透明玻璃、选中高亮）。支持 OBJ + MTL、Blockbench `.bbmodel`，按 MTR 规则解析部件（`o`/`g` 分组）、贴图（`default.png` → 车辆贴图、同路径 png、`flipTextureV`）与材质（Kd/透明度）。单位与原版一致：OBJ 顶点 1 单位 = 1 方块（米）、位置定义为 1/16 方块（像素）、`modelYOffset` 为方块数（正值下移）。 |
 | **外部模型导入** | 「文件 → 导入模型」：Metasequoia `.mqo` / 压缩 `.mqoz`（材质 `col`/`tex`、`vertex`/`BVertex` UV、`face` 的 `V`/`M`/`UV`，左手坐标自动转右手、面序反转）与 glTF 2.0 `.gltf` / `.glb`（节点 TRS/矩阵变换烘焙、POSITION/NORMAL/TEXCOORD_0、索引、`baseColorFactor`→Kd、`baseColorTexture` 重编码 PNG、data URI 与外部文件）。导入后转为 OBJ+MTL+PNG 资源挂到车辆，可直接预览与导出。 |
 | **开关门动画预览** | 时间轴完整复刻 TSC 停站门周期（`DOOR_DELAY = 1000 ms`、`DOOR_MOVE_TIME = 3200 ms`），并逐式移植 MTR 的 12 种门动画曲线（STANDARD…R211，含 `doorXMultiplier`/`doorZMultiplier`、`renderFrom/UntilOpeningDoorTime` 可见窗口）。可播放、暂停、拖拽 scrub，并实时驱动 3D 视口。 |
 | **VVVF 试听** | 三种模式：① **参数合成器**（C++ 引擎：SPWM 自然采样 / SHE 特定谐波消去、同步脉冲带、V/f 与弱磁、RL 电机负载、直流阻断、滚噪）实时波形 + 频谱；② **BVE 电机数据 + 真实音源回放**（解析 `sound.cfg`（含 `[SoundList]`）与 `powervol/powerfreq/brakevol/brakefreq.csv` 或 BVE4 `train.dat`；自动加载音源集内的电机 WAV 循环——读取 RIFF PCM 8/16/24/32 位、IEEE float 32/64 位、WAVE_FORMAT_EXTENSIBLE——按频率表速率、音量表音量循环重采样，多声道叠加、增益平滑无咔哒声；无 WAV 时可用合成器近似或手动指定一个）；③ **旧版速度音**（MTR3 `_acceleration_Na` 命名与速度桶规则仿真）。均可输出 5 秒 WAV。 |

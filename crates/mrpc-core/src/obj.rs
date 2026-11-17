@@ -211,6 +211,30 @@ impl ObjModel {
         }
         if any { Some((min, max)) } else { None }
     }
+
+    /// Multiply every vertex position by `factor` (uniform scale).
+    ///
+    /// MTR OBJ resources are authored with **1 unit = 1 block** (the mod
+    /// renders OBJ vertices raw next to `positionDefinitions`/16 — see
+    /// `MqoModelConverter.MQO_TO_OBJ_SCALE` and the NTE OBJ guide: "each
+    /// unit's length is 1m", MQO must be "reduced to one hundredth"). The
+    /// viewport pipeline is pixel-space (1 unit = 1/16 block, like
+    /// Blockbench models and the position definitions), so OBJ/MQO sources
+    /// are converted with `scale(16.0)` on load; the demo generator emits
+    /// block units directly.
+    pub fn scale(&mut self, factor: f32) {
+        for part in &mut self.parts {
+            for mesh in &mut part.meshes {
+                for v in &mut mesh.vertices {
+                    for c in 0..3 {
+                        v.pos[c] *= factor;
+                    }
+                }
+                // Normals are direction vectors — uniform scaling does not
+                // change them (they are re-normalised in the shader anyway).
+            }
+        }
+    }
 }
 
 fn parse_f32(tok: &str) -> f32 {

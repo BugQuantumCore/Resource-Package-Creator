@@ -10,8 +10,14 @@
 //! Coordinate conversion: Metasequoia is left-handed (x right, y up, z into
 //! the screen); OBJ and Minecraft are right-handed, so `z` is negated and
 //! the face winding order reversed, preserving which way faces point.
-//! UVs keep the Metasequoia top-left origin (`v` downwards), matching
-//! Minecraft texture sampling with `flipTextureV = false`.
+//! Metasequoia units are CENTIMETRES in MTR packs — the mod's
+//! `MqoModelConverter` multiplies every coordinate by
+//! `MQO_TO_OBJ_SCALE = 0.01` to get metre/block-sized OBJ vertices (the NTE
+//! migration guide says the same: "reduce the size to one hundredth of the
+//! original size"), so this importer applies the identical scale — without
+//! it an imported car rendered ~100x oversized. UVs keep the Metasequoia
+//! top-left origin (`v` downwards), matching Minecraft texture sampling
+//! with `flipTextureV = false`.
 //!
 //! Textures referenced by `tex("...")` are not read here — the caller
 //! resolves them next to the source file (see the app import flow).
@@ -152,6 +158,9 @@ fn read_mqo_from_zip(bytes: &[u8]) -> Result<String, MqoError> {
 
 fn parse_material_attrs(p: &mut Parser, name: String) -> ImportedMaterial {
     let mut mat = ImportedMaterial { name, kd: [0.8, 0.8, 0.8], d: 1.0, map_kd: None };
+    // Metasequoia writes `col` as sRGB display floats — store linear like
+    // the MTL parser does, or untextured surfaces render double-brightened.
+    mat.kd = crate::srgb3_to_linear(mat.kd);
     // Attributes run until the next quoted string, the closing brace, or the
     // end of the file.
     loop {
@@ -168,12 +177,15 @@ fn parse_material_attrs(p: &mut Parser, name: String) -> ImportedMaterial {
                 let args = p.take_paren_args();
                 match key.as_str() {
                     "col" => {
-                        // col(r g b a) — floats 0..1.
+                        // col(r g b a) — floats 0..1, sRGB-encoded.
                         let nums = args.numbers();
                         if nums.len() >= 3 {
-                            for c in 0..3 {
-                                mat.kd[c] = nums[c].clamp(0.0, 1.0);
-                            }
+                            let kd = crate::srgb3_to_linear([
+                                nums[0].clamp(0.0, 1.0),
+                                nums[1].clamp(0.0, 1.0),
+                                nums[2].clamp(0.0, 1.0),
+                            ]);
+                            mat.kd = kd;
                         }
                         if nums.len() >= 4 {
                             mat.d = nums[3].clamp(0.0, 1.0);
@@ -197,6 +209,10 @@ struct ObjectMeshAcc {
     // (material index or None, corner indices, corner uvs)
     faces: Vec<(Option<usize>, Vec<usize>, Vec<[f32; 2]>)>,
 }
+
+/// Metasequoia → OBJ unit scale, identical to the mod's
+/// `MqoModelConverter.MQO_TO_OBJ_SCALE` (1 MQO unit = 1 cm → 0.01 blocks).
+const MQO_TO_OBJ_SCALE: f32 = 0.01;
 
 fn parse_object(p: &mut Parser, materials: &[ImportedMaterial], name: String) -> Result<ObjPart, MqoError> {
     let mut acc = ObjectMeshAcc { vertices: Vec::new(), faces: Vec::new() };
@@ -261,11 +277,15 @@ fn parse_object(p: &mut Parser, materials: &[ImportedMaterial], name: String) ->
                 buckets.last_mut().unwrap()
             }
         };
-        // Left-handed → right-handed: negate z, reverse winding.
+        // Left-handed → right-handed: negate z, reverse winding; scale
+        // centimetres → metres/blocks on the same corner write.
         for (n, &vi) in idxs.iter().enumerate() {
             let (pos, vuv) = acc.vertices.get(vi).copied().unwrap_or(([0.0; 3], [0.0; 2]));
             let uv = uvs.get(n).copied().unwrap_or(vuv);
-            bucket.1.push(([pos[0], pos[1], -pos[2]], uv));
+            bucket.1.push((
+                [pos[0] * MQO_TO_OBJ_SCALE, pos[1] * MQO_TO_OBJ_SCALE, -pos[2] * MQO_TO_OBJ_SCALE],
+                uv,
+            ));
         }
     }
 
@@ -622,10 +642,17 @@ Object "door" {
 
     #[test]
     fn parses_materials_objects_faces() {
+        fn close(a: [f32; 3], b: [f32; 3]) -> bool {
+            a.iter().zip(b.iter()).all(|(x, y)| (x - y).abs() < 1e-6)
+        }
         let imported = parse_mqo(SAMPLE).unwrap();
         assert_eq!(imported.materials.len(), 2);
         assert_eq!(imported.materials[0].name, "red");
-        assert_eq!(imported.materials[0].kd, [1.0, 0.2, 0.2]);
+        // col(1 0.2 0.2 1) is sRGB; stored linear: 0.2 sRGB ≈ 0.0331.
+        let kd_expect = crate::srgb3_to_linear([1.0, 0.2, 0.2]);
+        for i in 0..3 {
+            assert!((imported.materials[0].kd[i] - kd_expect[i]).abs() < 1e-6);
+        }
         assert!(imported.materials[0].map_kd.is_none());
         assert_eq!(imported.materials[1].name, "glass");
         assert_eq!(imported.materials[1].d, 0.5);
@@ -639,10 +666,11 @@ Object "door" {
         let red = body.meshes.iter().find(|m| m.material == "red").unwrap();
         let glass = body.meshes.iter().find(|m| m.material == "glass").unwrap();
         assert_eq!(red.vertices.len(), 6);
-        // z flip + reversed winding: V(0 1 2 3) → corners [3, 2, 1, 0].
-        assert_eq!(red.vertices[0].pos, [0.0, 1.0, -1.0]);
+        // z flip + reversed winding + ×0.01 cm→block scale:
+        // V(0 1 2 3) → corners [3, 2, 1, 0].
+        assert!(close(red.vertices[0].pos, [0.0, 0.01, -0.01]));
         // Fan triangulation: triangle 2 = corners (3, 1, 0).
-        assert_eq!(red.vertices[5].pos, [0.0, 0.0, -1.0]);
+        assert!(close(red.vertices[5].pos, [0.0, 0.0, -0.01]));
         // normals present
         assert!(red.vertices.iter().all(|v| v.normal != [0.0, 0.0, 0.0]));
         // UV from the face UV() attribute (reversed with the corners)
@@ -653,7 +681,7 @@ Object "door" {
         assert_eq!(door.meshes.len(), 1);
         assert_eq!(door.meshes[0].material, "default");
         assert_eq!(door.meshes[0].vertices.len(), 3);
-        assert_eq!(door.meshes[0].vertices[0].pos, [0.4, 0.8, -0.5]);
+        assert!(close(door.meshes[0].vertices[0].pos, [0.004, 0.008, -0.005]));
     }
 
     #[test]

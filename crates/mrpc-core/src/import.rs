@@ -127,12 +127,15 @@ pub fn obj_to_text(model: &ObjModel) -> String {
 pub fn mtl_to_text(materials: &[ImportedMaterial]) -> String {
     let mut out = String::from("# Exported by MTR Resource Package Creator\n");
     for m in materials {
+        // `kd` is stored LINEAR (see the parsers); MTL Kd is sRGB, so
+        // convert back or a round-trip darkens the color twice.
+        let kd = crate::linear3_to_srgb(m.kd);
         out.push_str(&format!(
             "newmtl {}\nKd {:.4} {:.4} {:.4}\n",
             sanitize_name(&m.name),
-            m.kd[0].clamp(0.0, 1.0),
-            m.kd[1].clamp(0.0, 1.0),
-            m.kd[2].clamp(0.0, 1.0)
+            kd[0].clamp(0.0, 1.0),
+            kd[1].clamp(0.0, 1.0),
+            kd[2].clamp(0.0, 1.0)
         ));
         if (m.d - 1.0).abs() > 1e-3 {
             out.push_str(&format!("d {:.4}\n", m.d.clamp(0.0, 1.0)));

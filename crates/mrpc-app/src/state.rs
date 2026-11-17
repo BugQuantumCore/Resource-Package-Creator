@@ -365,6 +365,14 @@ impl EditorState {
         // (model, materials carried over from the importer — MQO has its
         // own; Blockbench names materials after internal texture names,
         // which MTR binds to the model entry's `textureResource`).
+        //
+        // UNIT CONVERSION (verified against the mod + NTE wiki): MTR OBJ and
+        // converted-MQO vertices are in BLOCKS ("each unit's length is 1m",
+        // `MQO_TO_OBJ_SCALE = 0.01`), while this app's scene pipeline, the
+        // position definitions and Blockbench models are in PIXELS
+        // (1 unit = 1/16 block). OBJ/MQO sources therefore scale ×16 on
+        // load; previously the /16 render shader made every real train
+        // render 16x too small — a speck next to the ±14-block grid.
         let (obj, imported_materials): (ObjModel, HashMap<String, Material>) =
             if lower.ends_with(".bbmodel") {
             match mrpc_core::bbmodel::parse_bbmodel(&String::from_utf8_lossy(obj_bytes)) {
@@ -399,7 +407,9 @@ impl EditorState {
             match mrpc_core::mqo::parse_mqoz(obj_bytes) {
                 Ok(im) => {
                     let materials = mqo_materials(&im);
-                    (im.obj, materials)
+                    let mut obj = im.obj;
+                    obj.scale(16.0); // cm→blocks happened in the importer
+                    (obj, materials)
                 }
                 Err(e) => {
                     self.status = format!("{}: {e}", t(self.locale, "error.parse"));
@@ -410,7 +420,9 @@ impl EditorState {
             match mrpc_core::mqo::parse_mqo(&String::from_utf8_lossy(obj_bytes)) {
                 Ok(im) => {
                     let materials = mqo_materials(&im);
-                    (im.obj, materials)
+                    let mut obj = im.obj;
+                    obj.scale(16.0); // cm→blocks happened in the importer
+                    (obj, materials)
                 }
                 Err(e) => {
                     self.status = format!("{}: {e}", t(self.locale, "error.parse"));
@@ -419,7 +431,10 @@ impl EditorState {
             }
         } else {
             match ObjModel::parse(&String::from_utf8_lossy(obj_bytes)) {
-                Ok(m) => (m, HashMap::new()),
+                Ok(mut m) => {
+                    m.scale(16.0); // MTR OBJ: 1 unit = 1 block → pixels
+                    (m, HashMap::new())
+                }
                 Err(e) => {
                     self.status = format!("{}: {e}", t(self.locale, "error.parse"));
                     return;
@@ -521,9 +536,15 @@ impl EditorState {
                             .cloned()
                             .unwrap_or_default();
                         let tint = if sub.material.is_empty() || material.map_kd.is_none() {
-                            // Unmapped material: use Kd (default black → light gray).
+                            // Unmapped material: use Kd (default black → light
+                            // gray, sRGB 0.8 → linear 0.604 — the pipeline
+                            // and target are linear/sRGB respectively).
                             let kd = material.kd;
-                            if kd == [0.0, 0.0, 0.0] { [0.8, 0.8, 0.8] } else { kd }
+                            if kd == [0.0, 0.0, 0.0] {
+                                mrpc_core::srgb3_to_linear([0.8, 0.8, 0.8])
+                            } else {
+                                kd
+                            }
                         } else {
                             [1.0, 1.0, 1.0]
                         };
@@ -562,10 +583,15 @@ impl EditorState {
                         instances.push(Instance::new(
                             mesh_idx,
                             placement.x,
-                            placement.y + model_y_offset * 16.0,
+                            // MTR parity: the mod translates OBJ parts by
+                            // `y/16 - modelYOffset` (Blockbench elements by
+                            // `- modelYOffset * 16`) — a POSITIVE offset LOWERS
+                            // the model. This used to add, lifting it instead.
+                            placement.y - model_y_offset * 16.0,
                             placement.z,
                             dx,
                             dz,
+                            placement.flipped,
                         ));
                     }
                 }
@@ -651,8 +677,10 @@ impl EditorState {
             center[2] as f32 / 16.0,
         );
         // ~76° of the view taken by the object at 50° fov leaves comfortable
-        // margin around it; real cars land at a Blender-like default distance.
-        self.cam.dist = (extent / 16.0 * 1.35).clamp(6.0, 200.0) as f32;
+        // margin around it. The floor is 2 (not 6): a sedan-sized 4-block
+        // car fits at dist 5.4, but sign-sized models (extent ~1) need to
+        // come very close or they still render as a speck.
+        self.cam.dist = (extent / 16.0 * 1.35).clamp(2.0, 200.0) as f32;
     }
 }
 
