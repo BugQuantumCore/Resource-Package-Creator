@@ -44,9 +44,17 @@ impl Camera {
         glam::camera::rh::proj::vulkan::perspective(50f32.to_radians(), aspect.max(0.05), 0.1, 400.0)
     }
 
+    /// Drag-to-orbit: the CAMERA follows the mouse.
+    ///
+    /// `dx`/`dy` are egui drag deltas (x right, y DOWN). Dragging right
+    /// orbits the camera to the screen-right of the target; dragging down
+    /// orbits it downward below the target — so the camera's motion tracks
+    /// the pointer, matching mainstream model viewers (Unity scene view,
+    /// Sketchfab, game editors). The previous `+=` convention moved the
+    /// camera opposite to the drag, which read as inverted controls.
     pub fn orbit(&mut self, dx: f32, dy: f32) {
-        self.yaw += dx * 0.008;
-        self.pitch = (self.pitch + dy * 0.008).clamp(-1.45, 1.45);
+        self.yaw -= dx * 0.008;
+        self.pitch = (self.pitch - dy * 0.008).clamp(-1.45, 1.45);
     }
 
     /// `dy` is the egui scroll delta: wheel UP (away from the user) is

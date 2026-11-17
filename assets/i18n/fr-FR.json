@@ -332,5 +332,6 @@
   "vvvf.bve_hint": "La boucle WAV est lue au rythme de la table de fréquences et au volume de la table des volumes (sémantique du bruit moteur BVE).",
   "panel.collapse": "Replier le panneau inférieur (rouvrir via la barre d’état ou le menu Affichage)",
   "panel.reopen": "Rouvrir le panneau inférieur",
+  "panel.collapse_short": "Masquer le panneau ▾",
   "view.bottom_panel": "Afficher le panneau d’outils inférieur"
 }

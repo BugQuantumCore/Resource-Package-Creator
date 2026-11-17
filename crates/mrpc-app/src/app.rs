@@ -958,7 +958,7 @@ impl MrpcApp {
         // The status bar must be laid out BEFORE the CentralPanel: a bottom
         // panel added after it is allocated from a zero-height rect (the
         // CentralPanel consumes everything left), so it never rendered —
-        // hiding the status readout AND the ⌃ bottom-panel-reopen button.
+        // hiding the status readout AND the labeled bottom-panel reopen button.
         self.status_bar(ui);
         bottom_tabs(self, ui);
         self.viewport_center(ui);
@@ -1519,12 +1519,12 @@ impl MrpcApp {
         let locale = self.state.locale;
         egui::Panel::bottom("status_bar").show(ui, |ui| {
             ui.horizontal(|ui| {
-                // Reopen button for the collapsed bottom panel — always visible
-                // escape hatch for the previously un-closable script editor.
+                // Labeled reopen button for the collapsed bottom panel — the
+                // bare "⌃" glyph was too subtle to find, which read as "the
+                // script editor can't be brought back / closed properly".
                 if !self.bottom_panel_open
                     && ui
-                        .small_button("⌃")
-                        .on_hover_text(t(locale, "panel.reopen"))
+                        .button(t(locale, "panel.reopen"))
                         .clicked()
                 {
                     self.bottom_panel_open = true;

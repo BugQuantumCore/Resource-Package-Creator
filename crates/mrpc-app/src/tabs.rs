@@ -37,13 +37,29 @@ pub fn bottom_tabs(app: &mut MrpcApp, ui: &mut egui::Ui) {
         .max_size(max_panel)
         .show_collapsible(ui, &mut panel_open, |ui| {
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut app.bottom_tab, BottomTab::Anim, t(locale, "anim.title"));
-                ui.selectable_value(&mut app.bottom_tab, BottomTab::Vvvf, t(locale, "vvvf.title"));
-                ui.selectable_value(&mut app.bottom_tab, BottomTab::Script, t(locale, "script.title"));
-                ui.selectable_value(&mut app.bottom_tab, BottomTab::Export, t(locale, "export.title"));
+                // Tabs. Clicking the ALREADY-ACTIVE tab collapses the panel —
+                // the instinctive toggle affordance — alongside the explicit
+                // labeled collapse button on the right (the tiny bare "▾"
+                // glyph was easy to miss, which read as "cannot close").
+                let tabs = [
+                    (BottomTab::Anim, "anim.title"),
+                    (BottomTab::Vvvf, "vvvf.title"),
+                    (BottomTab::Script, "script.title"),
+                    (BottomTab::Export, "export.title"),
+                ];
+                for (kind, key) in tabs {
+                    let is_active = tab == kind;
+                    if ui.selectable_label(is_active, t(locale, key)).clicked() {
+                        if is_active {
+                            collapse_requested = true;
+                        } else {
+                            app.bottom_tab = kind;
+                        }
+                    }
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
-                        .small_button("▾")
+                        .button(t(locale, "panel.collapse_short"))
                         .on_hover_text(t(locale, "panel.collapse"))
                         .clicked()
                     {

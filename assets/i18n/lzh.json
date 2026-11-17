@@ -332,5 +332,6 @@
   "vvvf.bve_hint": "環音循頻率之表而變其速，循音量之表而變其聲（BVE 馬達之義也）。",
   "panel.collapse": "斂其下面板（可自下方一列復啟之）",
   "panel.reopen": "復啟下面之板",
+  "panel.collapse_short": "斂面板 ▾",
   "view.bottom_panel": "見下方之具板"
 }

@@ -332,5 +332,6 @@
   "vvvf.bve_hint": "The loop WAV plays at the frequency-table rate and volume-table gain (BVE motor noise semantics).",
   "panel.collapse": "Collapse the bottom panel (reopen from the status bar or View menu)",
   "panel.reopen": "Reopen the bottom panel",
+  "panel.collapse_short": "Hide panel ▾",
   "view.bottom_panel": "Show bottom tool panel"
 }
